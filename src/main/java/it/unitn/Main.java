@@ -4,6 +4,12 @@ package it.unitn;
 public class Main {
     public static void main(String[] args) {
         Manager manager = new Manager();
+        manager.join(10);
+        manager.join(10);
+        manager.join(20);
+        manager.join(30);
+        manager.join(40);
+        manager.join(50);
 
     /*
         class Value {val int, version: int}
