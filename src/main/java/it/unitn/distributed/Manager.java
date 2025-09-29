@@ -1,22 +1,16 @@
-package it.unitn;
+package it.unitn.distributed;
 
 import akka.actor.Actor;
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 import akka.actor.InvalidActorNameException;
-import it.unitn.messages.JoinMsg;
-import it.unitn.node.Node;
+import it.unitn.model.message.JoinMsg;
 
-import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.TreeMap;
+
 
 public class Manager {
-    final static int R = 2;
-    final static int W = 2;
-    final static int N = 3;
-    final static int TIMEOUT = 1000;  // in milliseconds
-
-    private final HashMap<Integer, ActorRef> network = new HashMap<>();
+    private final TreeMap<Integer, ActorRef> network = new TreeMap<>();
     private final ActorSystem system;
 
     public Manager() {

@@ -1,9 +1,9 @@
-package it.unitn;
+package it.unitn.distributed;
 
 import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
-import it.unitn.messages.GetRequestMsg;
-import it.unitn.messages.UpdateRequestMsg;
+import it.unitn.model.message.GetRequestMsg;
+import it.unitn.model.message.UpdateRequestMsg;
 
 public class Client extends AbstractActor {
     public void get(ActorRef node, int key) {

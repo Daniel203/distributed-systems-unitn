@@ -1,24 +1,26 @@
-package it.unitn.node;
+package it.unitn.distributed;
 
 import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
 import akka.actor.Props;
-import it.unitn.messages.*;
+import it.unitn.constraints.Constraints;
+import it.unitn.dataStructure.CircularTreeMap;
+import it.unitn.model.message.*;
+import it.unitn.model.StorageData;
 
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.TreeMap;
 
 public class Node extends AbstractActor {
     private final int id;
-    private final HashMap<Integer, ActorRef> network;
-    private final HashMap<Integer, StorageData> storage;
+    private final CircularTreeMap<Integer, ActorRef> network;
+    private final TreeMap<Integer, StorageData> storage;
 
     public Node(int id) {
         super();
         this.id = id;
-        this.network = new HashMap<>();
-        this.storage = new HashMap<>();
+        this.network = new CircularTreeMap<>();
+        this.storage = new TreeMap<>();
     }
 
     public static Props props(int id) {
@@ -34,6 +36,8 @@ public class Node extends AbstractActor {
                 .match(NodeListRequestMsg.class, this::onNodeListRequestMsg)
                 .match(NodeListResponseMsg.class, this::onNodeListResponseMsg)
                 .match(JoinedNetworkMsg.class, this::onJoinedNetworkMsg)
+                .match(StorageRequestMsg.class, this::onStorageRequestMsg)
+                .match(StorageResponseMsg.class, this::onStorageResponseMsg)
                 .build();
     }
 
@@ -67,26 +71,47 @@ public class Node extends AbstractActor {
     }
 
     public void onNodeListResponseMsg(NodeListResponseMsg msg) {
-        if (msg.network().isEmpty()) {
-            return;
-        }
-
         // Add the response from the bootstrapping peer to the current network view
         // NOTE: addAll() because this.network contains self
         this.network.putAll(msg.network());
 
-        // TODO: ask clockwise nearest node for all the data in storage that the current node is responsible for
-        // Find the nearest clockwise node
-        int nearestNodeId;
-        for (Map.Entry<Integer, ActorRef> entry : msg.network().entrySet()) {
-            // TODO: consider that the network is circular
+        // Get the nearest clockwise node
+        ActorRef nextNodeValue = this.network.getNext(this.id);
+
+        // Ask the nearest clockwise node for all the values that it holds
+        StorageRequestMsg storageRequestMsg = new StorageRequestMsg();
+        nextNodeValue.tell(storageRequestMsg, getSelf());
+
+    }
+
+    public void onStorageRequestMsg(StorageRequestMsg msg) {
+        StorageResponseMsg storageResponseMsg = new StorageResponseMsg(this.storage);
+        getSender().tell(storageResponseMsg, getSelf());
+    }
+
+    public void onStorageResponseMsg(StorageResponseMsg msg) {
+        // Keep only the data that the current node is responsible for
+        // Where id(first node holding data, then rotate clockwise replicaCount times) >= idNode
+        // idData = 10, idNode = 20, replicaCount = 3, nodes = 5, 15, 20, 30
+        // 30 >= 20 -> keep data
+        for (Map.Entry<Integer, StorageData> entry : msg.storage().entrySet()) {
+            var nextNthNodeKey = this.network.nthNextKey(entry.getKey(), Constraints.N);
+            if (nextNthNodeKey >= this.id) {
+                this.storage.put(entry.getKey(), entry.getValue());
+            }
         }
 
+        // TODO: Check that the values are up to date (call other nodes with those values)
+
         // Broadcast that I joined the network.
-        // NOTE: foreach on msg.network to avoid including self
-        for (ActorRef node : msg.network().values()) {
-            JoinedNetworkMsg joinedNetworkMsg = new JoinedNetworkMsg();
-            node.tell(joinedNetworkMsg, getSelf());
+        for (Map.Entry<Integer, ActorRef> entry : this.network.entrySet()) {
+            Integer key = entry.getKey();
+            ActorRef node = entry.getValue();
+
+            if (key != this.id) {
+                JoinedNetworkMsg joinedNetworkMsg = new JoinedNetworkMsg();
+                node.tell(joinedNetworkMsg, getSelf());
+            }
         }
     }
 

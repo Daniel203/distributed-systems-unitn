@@ -1,4 +1,4 @@
-package it.unitn.messages;
+package it.unitn.model.message;
 
 import akka.actor.ActorRef;
 
