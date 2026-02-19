@@ -2,17 +2,27 @@ package it.unitn.distributed;
 
 import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
-import it.unitn.model.message.GetRequestMsg;
-import it.unitn.model.message.UpdateRequestMsg;
+import it.unitn.model.message.Messages.*;
 
 public class Client extends AbstractActor {
+    /**
+     * Get latest stored value given a key
+     * @param node Node to contact
+     * @param key Key to search
+     */
     public void get(ActorRef node, int key) {
-        GetRequestMsg req = new GetRequestMsg(key);
+        ClientGetRequestMsg req = new ClientGetRequestMsg(key);
         node.tell(req, getSelf());
     }
 
-    public void update(ActorRef node, int key, int value) {
-        UpdateRequestMsg req = new UpdateRequestMsg(key, value);
+    /**
+     * Update the value of a given key
+     * @param node Node to contact
+     * @param key Key to search
+     * @param value Value to insert
+     */
+    public void update(ActorRef node, int key, String value) {
+        ClientUpdateRequestMsg req = new ClientUpdateRequestMsg(key, value);
         node.tell(req, getSelf());
     }
 

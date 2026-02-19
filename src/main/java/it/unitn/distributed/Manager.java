@@ -4,7 +4,7 @@ import akka.actor.Actor;
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 import akka.actor.InvalidActorNameException;
-import it.unitn.model.message.JoinMsg;
+import it.unitn.model.message.Messages.*;
 
 import java.util.TreeMap;
 
@@ -21,9 +21,8 @@ public class Manager {
         try {
             ActorRef node = system.actorOf(Node.props(nodeId), String.valueOf(nodeId));
 
-            // No check if it's already present because the initialization
-            // returns an error if creating two nodes with the same id, so no need for
-            // another check
+            // Doesn't check if it's already present because the initialization
+            // returns an error if creating two nodes with the same id
             this.network.put(nodeId, node);
 
             // Select a node from the network as a bootstrapping peer for the join
@@ -45,5 +44,13 @@ public class Manager {
     }
 
     public void recovery() {
+    }
+
+    public ActorRef getNodeById(int id) {
+        return this.network.get(id);
+    }
+
+    public ActorSystem getSystem() {
+        return this.system;
     }
 }

@@ -1,42 +1,31 @@
 package it.unitn;
 
 
+import akka.actor.ActorRef;
+import akka.actor.Props;
+import it.unitn.distributed.Client;
 import it.unitn.distributed.Manager;
+import it.unitn.model.message.Messages.*;
 
 public class Main {
     public static void main(String[] args) {
         Manager manager = new Manager();
-        manager.join(10);
+
+        // Create nodes
         manager.join(10);
         manager.join(20);
         manager.join(30);
         manager.join(40);
         manager.join(50);
 
-    /*
-        class Value {val int, version: int}
-        key: Value 
-        clientStorage
+        // Create a client
+        ActorRef c1 = manager.getSystem()
+                .actorOf(Props.create(Client.class), "client1");
 
-        nodes: Array<Node>
-        nodesCrashed: Array<Node>
-
-        Node:
-        - id
-        - storage (default)
-        - get()
-
-        Messaggi:
-        Read(key)
-        ReadResponse
-        Write(key, value)
-        WriteResponse
-        Leave
-        Join
-        AskJoin (chiede tutti i nodi che ci sono nel sistema)
-        Crash (main -> node)
-        Recover
-    */
+        // Send updates
+        c1.tell(new ClientUpdateRequestMsg(20, "test1"), manager.getNodeById(10));
+        c1.tell(new ClientUpdateRequestMsg(30, "test2"), manager.getNodeById(10));
+        c1.tell(new ClientUpdateRequestMsg(40, "test3"), manager.getNodeById(10));
     }
 
 }
