@@ -13,7 +13,6 @@ import it.unitn.models.ReadRequestContext;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
@@ -25,6 +24,7 @@ public class Node extends AbstractActor {
     private final TreeMap<Integer, StorageData> storage;
     private final HashMap<UUID, ReadRequestContext> pendingReads;
     private final HashMap<UUID, WriteRequestContext> pendingWrites;
+    private boolean isRecovering;
 
     public Node(int id) {
         super();
@@ -33,6 +33,7 @@ public class Node extends AbstractActor {
         this.storage = new TreeMap<>();
         this.pendingReads = new HashMap<>();
         this.pendingWrites = new HashMap<>();
+        this.isRecovering = false;
     }
 
     public static Props props(int id) {
@@ -59,6 +60,10 @@ public class Node extends AbstractActor {
                 .match(StorageRequestMsg.class, this::onStorageRequestMsg)
                 .match(StorageResponseMsg.class, this::onStorageResponseMsg)
                 .match(JoinedNetworkMsg.class, this::onJoinedNetworkMsg)
+                .match(LeaveMsg.class, this::onLeaveMsg)
+                .match(NodeLeavingMsg.class, this::onNodeLeavingMsg)
+                .match(CrashMsg.class, this::onCrashMsg)
+                .match(RecoverMsg.class, this::onRecoverMsg)
 
                 // Debug and test
                 .match(DebugPrintStateMsg.class, this::onDebugPrintStateMsg)
@@ -75,6 +80,43 @@ public class Node extends AbstractActor {
         }
 
         // Ask the bootstrapping peer for the list of nodes in the network
+        NodeListRequestMsg nodeListRequestMsg = new NodeListRequestMsg();
+        msg.bootstrapPeer().tell(nodeListRequestMsg, getSelf());
+    }
+
+    public void onLeaveMsg(LeaveMsg msg) {
+        // Broadcast that I am leaving the network
+        for (Map.Entry<Integer, ActorRef> entry : this.network.entrySet()) {
+            Integer key = entry.getKey();
+            ActorRef node = entry.getValue();
+
+            if (key != this.id) {
+                NodeLeavingMsg nodeLeavingMsg = new NodeLeavingMsg(this.id, this.storage);
+                node.tell(nodeLeavingMsg, getSelf());
+            }
+        }
+
+        // Stop the node
+        getContext().stop(getSelf());
+    }
+
+    public void onCrashMsg(CrashMsg msg) {
+        // Just stop the node without any handoff
+        getContext().stop(getSelf());
+    }
+
+    public void onRecoverMsg(RecoverMsg msg) {
+        this.isRecovering = true;
+        this.network.put(this.id, getSelf());
+
+        // If no bootstrapping peer, it means that the node is the first of the
+        // network, hence no need to ask for other nodes in the network
+        if (msg.bootstrapPeer() == null) {
+            this.isRecovering = false; // No need to recover data if I'm the first node
+            return;
+        }
+
+        // Ask the peer for the network ring to start the data sync!
         NodeListRequestMsg nodeListRequestMsg = new NodeListRequestMsg();
         msg.bootstrapPeer().tell(nodeListRequestMsg, getSelf());
     }
@@ -139,15 +181,20 @@ public class Node extends AbstractActor {
             }
         }
 
-        // Broadcast that I joined the network.
-        for (Map.Entry<Integer, ActorRef> entry : this.network.entrySet()) {
-            Integer key = entry.getKey();
-            ActorRef node = entry.getValue();
+        if (!this.isRecovering) {
+            // Broadcast that I joined the network.
+            for (Map.Entry<Integer, ActorRef> entry : this.network.entrySet()) {
+                Integer key = entry.getKey();
+                ActorRef node = entry.getValue();
 
-            if (key != this.id) {
-                JoinedNetworkMsg joinedNetworkMsg = new JoinedNetworkMsg(this.id);
-                node.tell(joinedNetworkMsg, getSelf());
+                if (key != this.id) {
+                    JoinedNetworkMsg joinedNetworkMsg = new JoinedNetworkMsg(this.id);
+                    node.tell(joinedNetworkMsg, getSelf());
+                }
             }
+        } else {
+            System.out.println("[NODE " + this.id + "] Recovery complete. Quietly resuming operations.");
+            this.isRecovering = false;
         }
     }
 
@@ -177,6 +224,33 @@ public class Node extends AbstractActor {
             if (!amIResponsible) {
                 iterator.remove();
             }
+        }
+    }
+
+    public void onNodeLeavingMsg(NodeLeavingMsg msg) {
+        this.network.remove(msg.leavingNodeId());
+
+        // Check orphaned data to see if I am now responsible for it
+        for (Map.Entry<Integer, StorageData> entry : msg.orphanedData().entrySet()) {
+            int dataKey = entry.getKey();
+            boolean amIResponsible = false;
+
+            // Calculate the N nodes using the new smaller network view
+            int currentNode = this.network.nextKey(dataKey - 1);
+            for (int i = 0; i < Constraints.N; i++) {
+                if (currentNode == this.id) {
+                    amIResponsible = true;
+                    break;
+                }
+                currentNode = this.network.nextKey(currentNode);
+            }
+
+            // If I am responsible, add the data to my storage
+            if (amIResponsible) {
+                this.storage.merge(dataKey, entry.getValue(),
+                        BinaryOperator.maxBy(Comparator.comparingInt(StorageData::version)));
+            }
+
         }
     }
 
@@ -305,7 +379,8 @@ public class Node extends AbstractActor {
     private void onReplicaWriteResponseMsg(ReplicaWriteResponseMsg msg) {
         WriteRequestContext context = pendingWrites.get(msg.requestId());
 
-        // If context is null, it means that the coordinator already replied to the client
+        // If context is null, it means that the coordinator already replied to the
+        // client
         if (context == null) {
             return;
         }

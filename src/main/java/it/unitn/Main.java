@@ -11,66 +11,75 @@ public class Main {
         Manager manager = new Manager();
 
         System.out.println("=========================================");
-        System.out.println(" PHASE 1: BOOTSTRAPPING INITIAL NETWORK");
+        System.out.println(" PHASE 1: BOOTSTRAPPING NETWORK (10-50)");
         System.out.println("=========================================");
-        int[] initialNodes = {10, 20, 30, 40};
+        int[] initialNodes = {10, 20, 30, 40, 50};
         for (int id : initialNodes) {
-            System.out.println("Joining node " + id + "...");
             manager.join(id);
-            Thread.sleep(1000); 
+            Thread.sleep(800); 
         }
 
         ActorRef c1 = manager.getSystem().actorOf(Props.create(Client.class), "client1");
         ActorRef c2 = manager.getSystem().actorOf(Props.create(Client.class), "client2");
+        ActorRef c3 = manager.getSystem().actorOf(Props.create(Client.class), "client3");
 
         System.out.println("\n=========================================");
-        System.out.println(" PHASE 2: CONCURRENT WRITES");
+        System.out.println(" PHASE 2: HEAVY CONCURRENT WRITES");
         System.out.println("=========================================");
-        System.out.println("[Client 1] asking Node 10 to store key 25 with value 'rock123'...");
-        System.out.println("[Client 2] asking Node 20 to store key 35 with value 'water'...");
-        
-        // Fired concurrently
-        manager.getNodeById(10).tell(new ClientUpdateRequestMsg(25, "rock123"), c1);
-        manager.getNodeById(20).tell(new ClientUpdateRequestMsg(35, "water"), c2);
+        System.out.println("Clients writing to keys 15, 35, and 55 simultaneously...");
+        manager.getNodeById(10).tell(new ClientUpdateRequestMsg(15, "apple"), c1);
+        manager.getNodeById(30).tell(new ClientUpdateRequestMsg(35, "banana"), c2);
+        manager.getNodeById(50).tell(new ClientUpdateRequestMsg(55, "cherry"), c3);
         Thread.sleep(1500); 
 
         System.out.println("\n=========================================");
-        System.out.println(" PHASE 3: CONCURRENT READS");
+        System.out.println(" PHASE 3: NETWORK CHURN (LEAVE & JOIN)");
         System.out.println("=========================================");
-        System.out.println("[Client 1] asking Node 40 for key 25 (Expected: rock123)");
-        System.out.println("[Client 2] asking Node 40 for key 35 (Expected: water)");
-        System.out.println("[Client 1] asking Node 30 for key 99 (Expected: KEY_NOT_FOUND)");
-
-        // Fired concurrently to the same Coordinator to test UUID map separation
-        manager.getNodeById(40).tell(new ClientGetRequestMsg(25), c1);
-        manager.getNodeById(40).tell(new ClientGetRequestMsg(35), c2);
-        manager.getNodeById(30).tell(new ClientGetRequestMsg(99), c1);
-        Thread.sleep(1500);
-
-        System.out.println("\n=========================================");
-        System.out.println(" PHASE 4: DATA UPDATE (TESTING VERSIONS)");
-        System.out.println("=========================================");
-        System.out.println("[Client 1] asking Node 30 to update key 25 to 'diamond456'...");
-        manager.getNodeById(30).tell(new ClientUpdateRequestMsg(25, "diamond456"), c1);
+        System.out.println("Node 20 LEAVING gracefully...");
+        manager.leave(20);
         Thread.sleep(1500);
         
-        System.out.println("[Client 2] asking Node 10 to read key 25 (Expected: diamond456)...");
-        manager.getNodeById(10).tell(new ClientGetRequestMsg(25), c2);
+        System.out.println("Node 60 JOINING the network...");
+        manager.join(60);
+        Thread.sleep(2000); // Give it time to sync orphaned data
+
+        System.out.println("\n=========================================");
+        System.out.println(" PHASE 4: VERIFYING DATA AFTER CHURN");
+        System.out.println("=========================================");
+        System.out.println("Reading keys 15, 35, and 55...");
+        manager.getNodeById(40).tell(new ClientGetRequestMsg(15), c1);
+        manager.getNodeById(40).tell(new ClientGetRequestMsg(35), c2);
+        manager.getNodeById(40).tell(new ClientGetRequestMsg(55), c3);
         Thread.sleep(1500);
 
         System.out.println("\n=========================================");
-        System.out.println(" PHASE 5: LATE NODE JOIN (DATA TRANSFER)");
+        System.out.println(" PHASE 5: HARD CRASH & FAULT TOLERANCE");
         System.out.println("=========================================");
-        System.out.println("Joining node 50... It should fetch existing data from its neighbor!");
-        manager.join(50);
-        Thread.sleep(2000); // Give it a bit longer to do the background sync
+        System.out.println("Node 40 CRASHES! (Power plug pulled)");
+        manager.crash(40);
+        Thread.sleep(1000);
+
+        System.out.println("Client 1 updating key 35 to 'banana_v2'...");
+        System.out.println("(Node 40 was a replica for 35, but the W=2 quorum should succeed!)");
+        manager.getNodeById(10).tell(new ClientUpdateRequestMsg(35, "banana_v2"), c1);
+        Thread.sleep(1500);
 
         System.out.println("\n=========================================");
-        System.out.println(" FINAL NODE STATES");
+        System.out.println(" PHASE 6: NODE RECOVERY");
         System.out.println("=========================================");
-        int[] allNodes = {10, 20, 30, 40, 50};
-        for (int id : allNodes) {
-            manager.getNodeById(id).tell(new DebugPrintStateMsg(), ActorRef.noSender());
+        System.out.println("Recovering Node 40. It should sync and grab 'banana_v2'...");
+        manager.recover(40);
+        Thread.sleep(2000); // Wait for recovery sync
+
+        System.out.println("\n=========================================");
+        System.out.println(" PHASE 7: FINAL STATE VERIFICATION");
+        System.out.println("=========================================");
+        int[] finalNodes = {10, 30, 40, 50, 60}; // 20 is gone, 60 is here
+        for (int id : finalNodes) {
+            ActorRef node = manager.getNodeById(id);
+            if (node != null) {
+                node.tell(new DebugPrintStateMsg(), ActorRef.noSender());
+            }
             Thread.sleep(100); 
         }
 

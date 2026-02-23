@@ -8,13 +8,17 @@ import it.unitn.dataStructures.CircularTreeMap;
 
 public interface Messages {
 
-    // Network management messages (join phase)
+    // Network management messages 
     public record JoinMsg(ActorRef bootstrapPeer) {}
     public record NodeListRequestMsg() {}
     public record NodeListResponseMsg(CircularTreeMap<Integer, ActorRef> network) {}
     public record StorageRequestMsg() {}
     public record StorageResponseMsg(TreeMap<Integer, StorageData> storage) {}
     public record JoinedNetworkMsg(int joinedNodeId) {}
+    public record LeaveMsg() {}
+    public record NodeLeavingMsg(int leavingNodeId, TreeMap<Integer, StorageData> orphanedData) {}
+    public record CrashMsg() {}
+    public record RecoverMsg(ActorRef bootstrapPeer) {}
 
     // Sent by the Client to any Node
     public record ClientGetRequestMsg(int key) {}
