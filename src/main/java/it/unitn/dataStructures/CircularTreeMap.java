@@ -1,4 +1,4 @@
-package it.unitn.dataStructure;
+package it.unitn.dataStructures;
 
 import java.util.Map;
 import java.util.Set;

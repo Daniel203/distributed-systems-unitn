@@ -1,9 +1,10 @@
-package it.unitn.model.message;
+package it.unitn.models;
 
 import java.util.TreeMap;
+import java.util.UUID;
+
 import akka.actor.ActorRef;
-import it.unitn.dataStructure.CircularTreeMap;
-import it.unitn.model.StorageData;
+import it.unitn.dataStructures.CircularTreeMap;
 
 public interface Messages {
 
@@ -20,14 +21,17 @@ public interface Messages {
     public record ClientUpdateRequestMsg(int key, String value) {}
     
     // Sent by the Coordinator back to the Client
-    public record ClientGetResponseMsg(int key, StorageData data) {}
+    public record ClientGetResponseMsg(String data) {}
     public record ClientUpdateResponseMsg(boolean success) {}
 
     // Sent by the Coordinator to the N replicas responsible for the key
-    public record ReplicaReadRequestMsg(int key) {}
-    public record ReplicaWriteRequestMsg(int key, StorageData data) {}
-
+    public record ReplicaReadRequestMsg(UUID requestId, int key) {}
+    public record ReplicaWriteRequestMsg(UUID requestId, int key, StorageData data) {}
     // Sent by the replicas back to the Coordinator
-    public record ReplicaReadResponseMsg(int key, StorageData data) {}
-    public record ReplicaWriteResponseMsg(int key, boolean success) {}
+    public record ReplicaReadResponseMsg(UUID requestId, int key, StorageData data) {}
+    public record ReplicaWriteResponseMsg(UUID requestId, int key, boolean success) {}
+
+
+    // Debug and test
+    public record DebugPrintStateMsg() {}
 }

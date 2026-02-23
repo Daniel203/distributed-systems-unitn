@@ -4,7 +4,7 @@ import akka.actor.Actor;
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 import akka.actor.InvalidActorNameException;
-import it.unitn.model.message.Messages.*;
+import it.unitn.models.Messages.*;
 
 import java.util.TreeMap;
 

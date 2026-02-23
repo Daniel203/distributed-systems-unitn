@@ -1,4 +1,4 @@
-package it.unitn.model;
+package it.unitn.models;
 
 public record StorageData(String value, int version) implements Comparable<StorageData> {
     @Override

@@ -4,25 +4,35 @@ import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
 import akka.actor.Props;
 import it.unitn.constraints.Constraints;
-import it.unitn.dataStructure.CircularTreeMap;
-import it.unitn.model.StorageData;
-import it.unitn.model.message.Messages.*;
+import it.unitn.dataStructures.CircularTreeMap;
+import it.unitn.models.StorageData;
+import it.unitn.models.WriteRequestContext;
+import it.unitn.models.Messages.*;
+import it.unitn.models.ReadRequestContext;
 
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.UUID;
 import java.util.function.BinaryOperator;
 
 public class Node extends AbstractActor {
     private final int id;
     private final CircularTreeMap<Integer, ActorRef> network;
     private final TreeMap<Integer, StorageData> storage;
+    private final HashMap<UUID, ReadRequestContext> pendingReads;
+    private final HashMap<UUID, WriteRequestContext> pendingWrites;
 
     public Node(int id) {
         super();
         this.id = id;
         this.network = new CircularTreeMap<>();
         this.storage = new TreeMap<>();
+        this.pendingReads = new HashMap<>();
+        this.pendingWrites = new HashMap<>();
     }
 
     public static Props props(int id) {
@@ -49,32 +59,10 @@ public class Node extends AbstractActor {
                 .match(StorageRequestMsg.class, this::onStorageRequestMsg)
                 .match(StorageResponseMsg.class, this::onStorageResponseMsg)
                 .match(JoinedNetworkMsg.class, this::onJoinedNetworkMsg)
+
+                // Debug and test
+                .match(DebugPrintStateMsg.class, this::onDebugPrintStateMsg)
                 .build();
-    }
-
-    private void onReplicaReadRequestMsg(ReplicaReadRequestMsg msg) {
-        StorageData value = this.storage.get(msg.key());
-        ReplicaReadResponseMsg res = new ReplicaReadResponseMsg(msg.key(), value);
-        getSender().tell(res, getSelf());
-    }
-
-    /**
-     * This function is used when a node joins the network and needs to
-     * update all its values to the latest version. It calls the other nodes
-     * with getRequestMsg, and it expects a response in order to compare its
-     * data with the data of other nodes and keep the most up to date
-     */
-    private void onReplicaReadResponseMsg(ReplicaReadResponseMsg msg) {
-        StorageData data = msg.data();
-
-        if (data == null) {
-            return;
-        }
-
-        this.storage.merge(msg.key(),
-                data,
-                BinaryOperator.maxBy(
-                        Comparator.comparingInt(StorageData::version)));
     }
 
     public void onJoinMsg(JoinMsg msg) {
@@ -146,10 +134,8 @@ public class Node extends AbstractActor {
             for (int i = 0; i < Constraints.N; i++) {
                 currNode = this.network.nextKey(currNode);
 
-                ClientGetRequestMsg getRequestMsg = new ClientGetRequestMsg(dataKey);
+                ReplicaReadRequestMsg getRequestMsg = new ReplicaReadRequestMsg(UUID.randomUUID(), dataKey);
                 this.network.get(currNode).tell(getRequestMsg, getSelf());
-
-                // The check for the latest version is handled in onClientGetResponseMsg()
             }
         }
 
@@ -194,19 +180,168 @@ public class Node extends AbstractActor {
         }
     }
 
+    /**
+     * This function is used by the client to ask the coordinator for the value of
+     * a key. The coordinator will then contact the N nodes responsible for the key.
+     */
     private void onClientGetRequestMsg(ClientGetRequestMsg msg) {
-        // TODO:  Read Quorum logic here 
+        UUID requestId = UUID.randomUUID();
+        ReadRequestContext context = new ReadRequestContext(getSender(), new ArrayList<StorageData>());
+        pendingReads.put(requestId, context);
+
+        // Contact the N nodes
+        int nextNode = this.network.nextKey(msg.key() - 1);
+        for (int i = 0; i < Constraints.N; i++) {
+            var request = new ReplicaReadRequestMsg(requestId, msg.key());
+            this.network.get(nextNode).tell(request, getSelf());
+
+            nextNode = this.network.nextKey(nextNode);
+        }
     }
 
     private void onClientUpdateRequestMsg(ClientUpdateRequestMsg msg) {
-        // TODO: Write Quorum logic here
+        UUID requestId = UUID.randomUUID();
+        WriteRequestContext context = new WriteRequestContext(getSender(), msg.key(), msg.value());
+        pendingWrites.put(requestId, context);
+
+        // Contact the N nodes to find out the current version of the data
+        int nextNode = this.network.nextKey(msg.key() - 1);
+        for (int i = 0; i < Constraints.N; i++) {
+            var request = new ReplicaReadRequestMsg(requestId, msg.key());
+            this.network.get(nextNode).tell(request, getSelf());
+            nextNode = this.network.nextKey(nextNode);
+        }
+    }
+
+    /**
+     * This function is used by the coordinator to ask the replicas for the value of
+     * a key. It replies with the value stored locally, if present, or null
+     * otherwise.
+     */
+    private void onReplicaReadRequestMsg(ReplicaReadRequestMsg msg) {
+        StorageData value = this.storage.get(msg.key());
+        ReplicaReadResponseMsg res = new ReplicaReadResponseMsg(msg.requestId(), msg.key(), value);
+        getSender().tell(res, getSelf());
+    }
+
+    /**
+     * This function is used to route incoming read responses from replicas to the
+     * appropriate workflow. Because the same message is used for different
+     * purposes, it checks the request ID to determine if the response belongs to an
+     * ongoing client read quorum, the first phase of a client write operation, or a
+     * background data synchronization during a node's join phase.
+     */
+    private void onReplicaReadResponseMsg(ReplicaReadResponseMsg msg) {
+        if (pendingReads.containsKey(msg.requestId())) {
+            handleClientReadQuorum(msg);
+        } else if (pendingWrites.containsKey(msg.requestId())) {
+            handleClientWritePhaseOne(msg);
+        } else {
+            handleJoinBackgroundSync(msg);
+        }
+    }
+
+    private void handleClientReadQuorum(ReplicaReadResponseMsg msg) {
+        ReadRequestContext context = pendingReads.get(msg.requestId());
+        context.replies.add(msg.data());
+
+        if (context.replies.size() >= Constraints.R) {
+            StorageData latestData = context.replies.stream()
+                    .filter(data -> data != null)
+                    .max(Comparator.comparingInt(StorageData::version))
+                    .orElse(null);
+
+            String valueToReturn = (latestData != null) ? latestData.value() : Constraints.KEY_NOT_FOUND_MSG;
+            context.client.tell(new ClientGetResponseMsg(valueToReturn), getSelf());
+            pendingReads.remove(msg.requestId());
+        }
+    }
+
+    private void handleClientWritePhaseOne(ReplicaReadResponseMsg msg) {
+        WriteRequestContext context = pendingWrites.get(msg.requestId());
+        context.readReplies.add(msg.data());
+
+        if (context.readReplies.size() >= Constraints.W) {
+            // Find the highest current version (if all are null, max is 0)
+            int maxVersion = 0;
+            for (StorageData d : context.readReplies) {
+                if (d != null && d.version() > maxVersion) {
+                    maxVersion = d.version();
+                }
+            }
+
+            // Create the new data with an incremented version
+            StorageData newData = new StorageData(context.newValue, maxVersion + 1);
+
+            // Send write requests to the N replicas
+            int nextNode = this.network.nextKey(context.key - 1);
+            for (int i = 0; i < Constraints.N; i++) {
+                var writeRequest = new ReplicaWriteRequestMsg(msg.requestId(), context.key, newData);
+                this.network.get(nextNode).tell(writeRequest, getSelf());
+                nextNode = this.network.nextKey(nextNode);
+            }
+
+            // Clean readRequest context to free memory
+            context.readReplies.clear();
+        }
+    }
+
+    private void handleJoinBackgroundSync(ReplicaReadResponseMsg msg) {
+        StorageData data = msg.data();
+        if (data == null)
+            return;
+
+        this.storage.merge(msg.key(), data,
+                BinaryOperator.maxBy(Comparator.comparingInt(StorageData::version)));
     }
 
     private void onReplicaWriteRequestMsg(ReplicaWriteRequestMsg msg) {
-        // TODO: Save the data and reply with success
+        this.storage.merge(msg.key(), msg.data(),
+                BinaryOperator.maxBy(Comparator.comparingInt(StorageData::version)));
+        ReplicaWriteResponseMsg res = new ReplicaWriteResponseMsg(msg.requestId(), msg.key(), true);
+        getSender().tell(res, getSelf());
     }
 
     private void onReplicaWriteResponseMsg(ReplicaWriteResponseMsg msg) {
-        // TODO: Coordinator counts the successful writes
+        WriteRequestContext context = pendingWrites.get(msg.requestId());
+
+        // If context is null, it means that the coordinator already replied to the client
+        if (context == null) {
+            return;
+        }
+
+        if (msg.success()) {
+            context.writeAcks++;
+        }
+
+        if (context.writeAcks >= Constraints.W) {
+            context.client.tell(new ClientUpdateResponseMsg(true), getSelf());
+            pendingWrites.remove(msg.requestId());
+        }
+    }
+
+    private void onDebugPrintStateMsg(DebugPrintStateMsg msg) {
+        System.out.println("=========================================");
+        System.out.println("NODE " + this.id + " STATE:");
+
+        // Print the network view
+        System.out.print("  Network View: [");
+        for (Integer nodeId : this.network.getMap().keySet()) {
+            System.out.print(nodeId + " ");
+        }
+        System.out.println("]");
+
+        // Print the stored data
+        System.out.println("  Storage:");
+        if (this.storage.isEmpty()) {
+            System.out.println("    (empty)");
+        } else {
+            for (Map.Entry<Integer, StorageData> entry : this.storage.entrySet()) {
+                System.out.println("    Key: " + entry.getKey() +
+                        " | Value: '" + entry.getValue().value() +
+                        "' | Version: " + entry.getValue().version());
+            }
+        }
+        System.out.println("=========================================\n");
     }
 }
