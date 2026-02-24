@@ -16,6 +16,9 @@ dependencies {
 
     implementation "com.typesafe.akka:akka-actor_${versions.ScalaBinary}"
     testImplementation "com.typesafe.akka:akka-testkit_${versions.ScalaBinary}"
+
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.0'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.0'
 }
 
 compileJava {
@@ -25,4 +28,8 @@ mainClassName = "it.unitn.Main"
 
 run {
     standardInput = System.in
+}
+
+test { 
+    useJUnitPlatform()
 }

@@ -29,13 +29,19 @@ public interface Messages {
     public record ClientUpdateResponseMsg(boolean success) {}
 
     // Sent by the Coordinator to the N replicas responsible for the key
-    public record ReplicaReadRequestMsg(UUID requestId, int key) {}
+    // `intentToWrite` flag to indicate if the read is part of a write operation, so
+    // that the replica can decide whether to grant a lock or not.
+    public record ReplicaReadRequestMsg(UUID requestId, int key, boolean intentToWrite) {}
     public record ReplicaWriteRequestMsg(UUID requestId, int key, StorageData data) {}
+    public record UnlockKeyMsg(int key, UUID requestId) {}
     // Sent by the replicas back to the Coordinator
-    public record ReplicaReadResponseMsg(UUID requestId, int key, StorageData data) {}
+    public record ReplicaReadResponseMsg(UUID requestId, int key, StorageData data, boolean lockDenied) {}
     public record ReplicaWriteResponseMsg(UUID requestId, int key, boolean success) {}
 
 
     // Debug and test
     public record DebugPrintStateMsg() {}
+    public record GetStateMsg() {}
+    public record NodeStateReplyMsg(java.util.TreeMap<Integer, StorageData> storage, 
+                                    java.util.Map<Integer, ActorRef> networkView) {}
 }
