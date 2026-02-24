@@ -11,6 +11,7 @@ public class WriteRequestContext {
     public final String newValue;
     public final List<StorageData> readReplies; 
     public int writeAcks; 
+    public boolean phase2Started;
 
     public WriteRequestContext(ActorRef client, int key, String newValue) {
         this.client = client;
@@ -18,5 +19,6 @@ public class WriteRequestContext {
         this.newValue = newValue;
         this.readReplies = new ArrayList<StorageData>();
         this.writeAcks = 0;
+        this.phase2Started = false;
     }
 }

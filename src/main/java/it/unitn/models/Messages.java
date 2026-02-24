@@ -20,6 +20,9 @@ public interface Messages {
     public record CrashMsg() {}
     public record RecoverMsg(ActorRef bootstrapPeer) {}
 
+    // Timeout tracking
+    public record CheckTimeoutMsg(UUID requestId) {}
+
     // Sent by the Client to any Node
     public record ClientGetRequestMsg(int key) {}
     public record ClientUpdateRequestMsg(int key, String value) {}

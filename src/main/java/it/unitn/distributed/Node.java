@@ -1,6 +1,7 @@
 package it.unitn.distributed;
 
 import akka.actor.AbstractActor;
+import akka.actor.Actor;
 import akka.actor.ActorRef;
 import akka.actor.Props;
 import it.unitn.constraints.Constraints;
@@ -15,8 +16,10 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Random;
 import java.util.TreeMap;
 import java.util.UUID;
+import scala.concurrent.duration.Duration;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BinaryOperator;
 
@@ -29,6 +32,7 @@ public class Node extends AbstractActor {
     private final HashMap<Integer, UUID> lockedKeys;
     private int pendingJoinReads;
     private boolean isRecovering;
+    private Random random;
 
     public Node(int id) {
         super();
@@ -40,6 +44,7 @@ public class Node extends AbstractActor {
         this.lockedKeys = new HashMap<>();
         this.pendingJoinReads = 0;
         this.isRecovering = false;
+        this.random = new Random();
     }
 
     public static Props props(int id) {
@@ -75,10 +80,12 @@ public class Node extends AbstractActor {
                 // Debug and test
                 .match(DebugPrintStateMsg.class, this::onDebugPrintStateMsg)
                 .match(GetStateMsg.class, this::onGetStateMsg)
+
+                .match(CheckTimeoutMsg.class, this::onCheckTimeoutMsg)
                 .build();
     }
 
-    public void onJoinMsg(JoinMsg msg) {
+    private void onJoinMsg(JoinMsg msg) {
         network.put(this.id, getSelf());
 
         // If no bootstrapping peer, it means that the node is the first of the
@@ -89,10 +96,10 @@ public class Node extends AbstractActor {
 
         // Ask the bootstrapping peer for the list of nodes in the network
         NodeListRequestMsg nodeListRequestMsg = new NodeListRequestMsg();
-        msg.bootstrapPeer().tell(nodeListRequestMsg, getSelf());
+        sendWithDelay(msg.bootstrapPeer(), nodeListRequestMsg, getSelf());
     }
 
-    public void onLeaveMsg(LeaveMsg msg) {
+    private void onLeaveMsg(LeaveMsg msg) {
         // Calculate the ring without this node
         CircularTreeMap<Integer, ActorRef> nextRing = new CircularTreeMap<>();
         nextRing.putAll(this.network.getMap());
@@ -117,14 +124,14 @@ public class Node extends AbstractActor {
         for (Map.Entry<Integer, TreeMap<Integer, StorageData>> entry : handoffPackages.entrySet()) {
             ActorRef targetNode = this.network.get(entry.getKey());
             NodeLeavingMsg nodeLeavingMsg = new NodeLeavingMsg(this.id, entry.getValue());
-            targetNode.tell(nodeLeavingMsg, getSelf());
+            sendWithDelay(targetNode, nodeLeavingMsg, getSelf());
         }
 
         // Send empty map to the rest
         for (Map.Entry<Integer, ActorRef> entry : nextRing.entrySet()) {
             if (!handoffPackages.containsKey(entry.getKey())) {
                 NodeLeavingMsg nodeLeavingMsg = new NodeLeavingMsg(this.id, new TreeMap<>());
-                entry.getValue().tell(nodeLeavingMsg, getSelf());
+                sendWithDelay(entry.getValue(), nodeLeavingMsg, getSelf());
             }
         }
 
@@ -132,12 +139,12 @@ public class Node extends AbstractActor {
         getContext().stop(getSelf());
     }
 
-    public void onCrashMsg(CrashMsg msg) {
+    private void onCrashMsg(CrashMsg msg) {
         // Just stop the node without any handoff
         getContext().stop(getSelf());
     }
 
-    public void onRecoverMsg(RecoverMsg msg) {
+    private void onRecoverMsg(RecoverMsg msg) {
         this.isRecovering = true;
         this.network.put(this.id, getSelf());
 
@@ -150,15 +157,15 @@ public class Node extends AbstractActor {
 
         // Ask the peer for the network ring to start the data sync!
         NodeListRequestMsg nodeListRequestMsg = new NodeListRequestMsg();
-        msg.bootstrapPeer().tell(nodeListRequestMsg, getSelf());
+        sendWithDelay(msg.bootstrapPeer(), nodeListRequestMsg, getSelf());
     }
 
-    public void onNodeListRequestMsg(NodeListRequestMsg msg) {
+    private void onNodeListRequestMsg(NodeListRequestMsg msg) {
         NodeListResponseMsg nodeListResponseMsg = new NodeListResponseMsg(this.network);
-        getSender().tell(nodeListResponseMsg, getSelf());
+        sendWithDelay(getSender(), nodeListResponseMsg, getSelf());
     }
 
-    public void onNodeListResponseMsg(NodeListResponseMsg msg) {
+    private void onNodeListResponseMsg(NodeListResponseMsg msg) {
         // Add the response from the bootstrapping peer to the current network view
         // NOTE: putAll() because this.network contains self
         this.network.putAll(msg.network());
@@ -168,13 +175,12 @@ public class Node extends AbstractActor {
 
         // Ask the nearest clockwise node for all the values that it holds
         StorageRequestMsg storageRequestMsg = new StorageRequestMsg();
-        nextNodeValue.tell(storageRequestMsg, getSelf());
-
+        sendWithDelay(nextNodeValue, storageRequestMsg, getSelf());
     }
 
-    public void onStorageRequestMsg(StorageRequestMsg msg) {
+    private void onStorageRequestMsg(StorageRequestMsg msg) {
         StorageResponseMsg storageResponseMsg = new StorageResponseMsg(this.storage);
-        getSender().tell(storageResponseMsg, getSelf());
+        sendWithDelay(getSender(), storageResponseMsg, getSelf());
     }
 
     /**
@@ -184,7 +190,7 @@ public class Node extends AbstractActor {
      * finish the join phase by broadcasting that I joined the network (if it's a
      * normal join) or just quietly resuming operations (if it's a recovery).
      */
-    public void onStorageResponseMsg(StorageResponseMsg msg) {
+    private void onStorageResponseMsg(StorageResponseMsg msg) {
         this.pendingJoinReads = 0;
 
         for (Map.Entry<Integer, StorageData> entry : msg.storage().entrySet()) {
@@ -212,7 +218,7 @@ public class Node extends AbstractActor {
                 int readNode = this.network.nextKey(dataKey - 1);
                 for (int i = 0; i < Constraints.N; i++) {
                     var request = new ReplicaReadRequestMsg(requestId, dataKey, false);
-                    this.network.get(readNode).tell(request, getSelf());
+                    sendWithDelay(this.network.get(readNode), request, getSelf());
                     readNode = this.network.nextKey(readNode);
                 }
             }
@@ -233,7 +239,7 @@ public class Node extends AbstractActor {
 
                 if (key != this.id) {
                     JoinedNetworkMsg joinedNetworkMsg = new JoinedNetworkMsg(this.id);
-                    node.tell(joinedNetworkMsg, getSelf());
+                    sendWithDelay(node, joinedNetworkMsg, getSelf());
                 }
             }
         } else {
@@ -242,7 +248,7 @@ public class Node extends AbstractActor {
         }
     }
 
-    public void onJoinedNetworkMsg(JoinedNetworkMsg msg) {
+    private void onJoinedNetworkMsg(JoinedNetworkMsg msg) {
         ActorRef joinedNode = getSender();
         this.network.put(msg.joinedNodeId(), joinedNode);
 
@@ -271,7 +277,7 @@ public class Node extends AbstractActor {
         }
     }
 
-    public void onNodeLeavingMsg(NodeLeavingMsg msg) {
+    private void onNodeLeavingMsg(NodeLeavingMsg msg) {
         this.network.remove(msg.leavingNodeId());
 
         // Check orphaned data to see if I am now responsible for it
@@ -307,11 +313,19 @@ public class Node extends AbstractActor {
         ReadRequestContext context = new ReadRequestContext(getSender(), msg.key(), new ArrayList<StorageData>());
         pendingReads.put(requestId, context);
 
+        // Start the timeout timer for this request
+        getContext().getSystem().scheduler().scheduleOnce(
+                Duration.create(Constraints.TIMEOUT, TimeUnit.MILLISECONDS),
+                getSelf(),
+                new CheckTimeoutMsg(requestId),
+                getContext().getSystem().dispatcher(),
+                ActorRef.noSender());
+
         // Contact the N nodes
         int nextNode = this.network.nextKey(msg.key() - 1);
         for (int i = 0; i < Constraints.N; i++) {
             var request = new ReplicaReadRequestMsg(requestId, msg.key(), false);
-            this.network.get(nextNode).tell(request, getSelf());
+            sendWithDelay(this.network.get(nextNode), request, getSelf());
 
             nextNode = this.network.nextKey(nextNode);
         }
@@ -322,11 +336,19 @@ public class Node extends AbstractActor {
         WriteRequestContext context = new WriteRequestContext(getSender(), msg.key(), msg.value());
         pendingWrites.put(requestId, context);
 
+        // Start the timeout timer for this request
+        getContext().getSystem().scheduler().scheduleOnce(
+                Duration.create(Constraints.TIMEOUT, TimeUnit.MILLISECONDS),
+                getSelf(),
+                new CheckTimeoutMsg(requestId),
+                getContext().getSystem().dispatcher(),
+                ActorRef.noSender());
+
         // Contact the N nodes to find out the current version of the data
         int nextNode = this.network.nextKey(msg.key() - 1);
         for (int i = 0; i < Constraints.N; i++) {
             var request = new ReplicaReadRequestMsg(requestId, msg.key(), true);
-            this.network.get(nextNode).tell(request, getSelf());
+            sendWithDelay(this.network.get(nextNode), request, getSelf());
             nextNode = this.network.nextKey(nextNode);
         }
     }
@@ -342,7 +364,7 @@ public class Node extends AbstractActor {
         if (currentLockOwner != null && !currentLockOwner.equals(msg.requestId())) {
             // It is locked. Deny the request to preserve sequential consistency
             ReplicaReadResponseMsg res = new ReplicaReadResponseMsg(msg.requestId(), msg.key(), null, true);
-            getSender().tell(res, getSelf());
+            sendWithDelay(getSender(), res, getSelf());
             return;
         }
 
@@ -353,7 +375,7 @@ public class Node extends AbstractActor {
             // Schedule an auto-unlock slightly after the normal timeout
             // just in case the coordinator crashes before sending Phase 2
             getContext().getSystem().scheduler().scheduleOnce(
-                    scala.concurrent.duration.Duration.create(Constraints.TIMEOUT + 500, TimeUnit.MILLISECONDS),
+                    Duration.create(Constraints.TIMEOUT + 500, TimeUnit.MILLISECONDS),
                     getSelf(),
                     new UnlockKeyMsg(msg.key(), msg.requestId()),
                     getContext().getSystem().dispatcher(),
@@ -363,7 +385,7 @@ public class Node extends AbstractActor {
         // Return the data
         StorageData value = this.storage.get(msg.key());
         ReplicaReadResponseMsg res = new ReplicaReadResponseMsg(msg.requestId(), msg.key(), value, false);
-        getSender().tell(res, getSelf());
+        sendWithDelay(getSender(), res, getSelf());
     }
 
     /**
@@ -385,7 +407,7 @@ public class Node extends AbstractActor {
             ReadRequestContext context = pendingReads.remove(msg.requestId());
             // Don't send error messages to ourselves during a join
             if (context != null && !context.client.equals(getSelf())) {
-                context.client.tell(new ClientGetResponseMsg(Errors.LOCK_DENIED_MSG), getSelf());
+                sendWithDelay(context.client, new ClientGetResponseMsg(Errors.LOCK_DENIED_MSG), getSelf());
             }
             return;
         }
@@ -415,7 +437,7 @@ public class Node extends AbstractActor {
                 }
             } else { // Normal client read
                 String valueToReturn = (latestData != null) ? latestData.value() : Errors.KEY_NOT_FOUND_MSG;
-                context.client.tell(new ClientGetResponseMsg(valueToReturn), getSelf());
+                sendWithDelay(context.client, new ClientGetResponseMsg(valueToReturn), getSelf());
             }
 
             pendingReads.remove(msg.requestId());
@@ -423,31 +445,37 @@ public class Node extends AbstractActor {
     }
 
     private void handleClientWritePhaseOne(ReplicaReadResponseMsg msg) {
-        if (msg.lockDenied()) {
-            // If any replica denied the lock, we can immediately fail the write operation
-            WriteRequestContext context = pendingWrites.remove(msg.requestId());
-            if (context != null) {
-                context.client.tell(new ClientUpdateResponseMsg(false), getSelf());
+        WriteRequestContext context = pendingWrites.get(msg.requestId());
+        if (context == null) {
+            return;
+        }
 
-                // Unlock this key on all replicas that granted the lock
-                int nextNode = this.network.nextKey(context.key - 1);
-                for (int i = 0; i < Constraints.N; i++) {
-                    var unlockMsg = new UnlockKeyMsg(context.key, msg.requestId());
-                    this.network.get(nextNode).tell(unlockMsg, getSelf());
-                    nextNode = this.network.nextKey(nextNode);
-                }
+        if (msg.lockDenied()) {
+            // If we already secured a Quorum (W=2) and started writing, ignore the 3rd replica's denial!
+            if (context.phase2Started) {
+                return;
+            }
+
+            // Otherwise, we failed to get a Quorum. Abort!
+            pendingWrites.remove(msg.requestId());
+            sendWithDelay(context.client, new ClientUpdateResponseMsg(false), getSelf());
+
+            // Unlock this key on all replicas that granted the lock
+            int nextNode = this.network.nextKey(context.key - 1);
+            for (int i = 0; i < Constraints.N; i++) {
+                var unlockMsg = new UnlockKeyMsg(context.key, msg.requestId());
+                sendWithDelay(this.network.get(nextNode), unlockMsg, getSelf());
+                nextNode = this.network.nextKey(nextNode);
             }
 
             return;
         }
 
-        WriteRequestContext context = pendingWrites.get(msg.requestId());
-        if (context == null) {
-            return;
-        }
         context.readReplies.add(msg.data());
 
         if (context.readReplies.size() == Constraints.W) {
+            context.phase2Started = true;
+
             // Find the highest current version (if all are null, max is 0)
             int maxVersion = 0;
             for (StorageData d : context.readReplies) {
@@ -463,7 +491,7 @@ public class Node extends AbstractActor {
             int nextNode = this.network.nextKey(context.key - 1);
             for (int i = 0; i < Constraints.N; i++) {
                 var writeRequest = new ReplicaWriteRequestMsg(msg.requestId(), context.key, newData);
-                this.network.get(nextNode).tell(writeRequest, getSelf());
+                sendWithDelay(this.network.get(nextNode), writeRequest, getSelf());
                 nextNode = this.network.nextKey(nextNode);
             }
 
@@ -482,7 +510,7 @@ public class Node extends AbstractActor {
         }
 
         ReplicaWriteResponseMsg res = new ReplicaWriteResponseMsg(msg.requestId(), msg.key(), true);
-        getSender().tell(res, getSelf());
+        sendWithDelay(getSender(), res, getSelf());
     }
 
     private void onReplicaWriteResponseMsg(ReplicaWriteResponseMsg msg) {
@@ -499,7 +527,7 @@ public class Node extends AbstractActor {
         }
 
         if (context.writeAcks == Constraints.W) {
-            context.client.tell(new ClientUpdateResponseMsg(true), getSelf());
+            sendWithDelay(context.client, new ClientUpdateResponseMsg(true), getSelf());
             pendingWrites.remove(msg.requestId());
         }
     }
@@ -510,7 +538,7 @@ public class Node extends AbstractActor {
      * request ID matches the one that currently holds the lock on the key, and if
      * so, it releases the lock by removing the entry from the `lockedKeys` map.
      */
-    public void onUnlockKeyMsg(UnlockKeyMsg msg) {
+    private void onUnlockKeyMsg(UnlockKeyMsg msg) {
         UUID lockOwner = lockedKeys.get(msg.key());
         if (lockOwner != null && lockOwner.equals(msg.requestId())) {
             lockedKeys.remove(msg.key());
@@ -542,12 +570,48 @@ public class Node extends AbstractActor {
         System.out.println("=========================================\n");
     }
 
-    public void onGetStateMsg(GetStateMsg msg) {
+    private void onGetStateMsg(GetStateMsg msg) {
         // Reply to the sender (the test runner) with a snapshot of our current state
-        getSender().tell(
-                new NodeStateReplyMsg(
-                        new TreeMap<>(this.storage),
-                        this.network.getMap()),
+        sendWithDelay(getSender(), new NodeStateReplyMsg(new TreeMap<>(this.storage), this.network.getMap()),
+                getSelf());
+    }
+
+    /**
+     * Checks if a request has timed out. If it is still in the pending maps,
+     * the quorum was not reached, and we must report an error to the client.
+     */
+    private void onCheckTimeoutMsg(CheckTimeoutMsg msg) {
+        UUID id = msg.requestId();
+
+        if (pendingReads.containsKey(id)) {
+            ReadRequestContext ctx = pendingReads.remove(id);
+
+            // Only send error if it was a real client (not a background join sync)
+            if (!ctx.client.equals(getSelf())) {
+                sendWithDelay(ctx.client, new ClientGetResponseMsg(Errors.TIMEOUT_MSG), getSelf());
+            }
+        }
+
+        if (pendingWrites.containsKey(id)) {
+            WriteRequestContext ctx = pendingWrites.remove(id);
+            sendWithDelay(ctx.client, new ClientUpdateResponseMsg(false), getSelf());
+            // NOTE: Any acquired locks will be automatically released by the replica's
+            // internal TIMEOUT + 500 timer, so we don't need to manually unlock them here!
+        }
+    }
+
+    /**
+     * Emulates network propagation delays by inserting a random interval (10-50ms)
+     * before sending unicast messages to other nodes.
+     */
+    private void sendWithDelay(ActorRef target, Object msg, ActorRef sender) {
+        int delayMs = 10 + random.nextInt(41); // Random delay between 10ms and 50ms
+
+        getContext().getSystem().scheduler().scheduleOnce(
+                Duration.create(delayMs, TimeUnit.MILLISECONDS),
+                target,
+                msg,
+                getContext().getSystem().dispatcher(),
                 getSelf());
     }
 }
