@@ -334,11 +334,26 @@ public class DistributedSystemTest {
         ClientUpdateResponseMsg res1 = (ClientUpdateResponseMsg) write1.get();
         ClientUpdateResponseMsg res2 = (ClientUpdateResponseMsg) write2.get();
 
-        // Assert: To prevent split-brain and sequential consistency violations, 
-        // the nodes must lock the key. With random network delays, one request might succeed, 
-        // or BOTH might fail (distributed deadlock). The ONLY invalid state is if BOTH succeed!
-        assertFalse(res1.success() && res2.success(), 
-            "Sequential Consistency Violation: Both concurrent writes were accepted!");
+        boolean bothSucceeded = res1.success() && res2.success();
+        boolean oneSucceeded = res1.success() ^ res2.success();
+
+        // 1. Assert they didn't both fail abnormally
+        assertTrue(bothSucceeded || oneSucceeded, "Sequential Consistency Violation: Both failed!");
+
+        // 2. Fetch the final state to prove sequential consistency was maintained
+        NodeStateReplyMsg finalState = (NodeStateReplyMsg) Patterns.ask(
+                manager.getNodeById(10), new GetStateMsg(), Duration.ofSeconds(3)).toCompletableFuture().get();
+
+        if (bothSucceeded) {
+            // If random delays perfectly serialized them, the version must have safely
+            // reached 2!
+            assertEquals(2, finalState.storage().get(42).version(),
+                    "Both succeeded sequentially, but the version is corrupted!");
+        } else {
+            // If they truly overlapped and one was rejected, the version must be 1!
+            assertEquals(1, finalState.storage().get(42).version(),
+                    "One write was rejected, but the version is corrupted!");
+        }
     }
 
     @Test

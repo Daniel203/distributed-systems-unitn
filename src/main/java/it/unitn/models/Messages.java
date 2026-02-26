@@ -19,6 +19,7 @@ public interface Messages {
     public record NodeLeavingMsg(int leavingNodeId, TreeMap<Integer, StorageData> orphanedData) {}
     public record CrashMsg() {}
     public record RecoverMsg(ActorRef bootstrapPeer) {}
+    public record FinishJoinPhaseMsg() {}
 
     // Timeout tracking
     public record CheckTimeoutMsg(UUID requestId) {}

@@ -1,5 +1,7 @@
 package it.unitn.dataStructures;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -125,4 +127,45 @@ public class CircularTreeMap<K, V> {
         return Map.copyOf(map);
     }
 
+
+    /**
+     * Finds the exact N nodes responsible for a given dataKey.
+     */
+    public List<K> getNResponsibleNodes(K dataKey, int n) {
+        List<K> responsibleNodes = new ArrayList<>();
+        if (this.map.isEmpty()) return responsibleNodes;
+
+        // find the first node >= dataKey, then walks clockwise
+        K currentNode = this.map.ceilingKey(dataKey);
+        if (currentNode == null) {
+            currentNode = this.map.firstKey(); // Wrap around
+        }
+
+        for (int i = 0; i < n; i++) {
+            responsibleNodes.add(currentNode);
+            currentNode = this.map.higherKey(currentNode);
+            if (currentNode == null) {
+                currentNode = this.map.firstKey(); // Wrap around
+            }
+        }
+        return responsibleNodes;
+    }
+
+    /**
+     * Checks if a specific nodeId is one of the N responsible nodes for a dataKey.
+     */
+    public boolean isResponsible(K nodeId, K dataKey, int n) {
+        return getNResponsibleNodes(dataKey, n).contains(nodeId);
+    }
+
+    /**
+     * Creates a copy of the current ring, excluding a specific node.
+     * Perfect for calculating the network topology when a node leaves.
+     */
+    public CircularTreeMap<K, V> cloneWithout(K nodeIdToRemove) {
+        CircularTreeMap<K, V> clone = new CircularTreeMap<>();
+        clone.putAll(this.map);
+        clone.remove(nodeIdToRemove);
+        return clone;
+    }
 }
