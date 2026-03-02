@@ -1,5 +1,6 @@
 package it.unitn.models;
 
+import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
 
@@ -46,6 +47,6 @@ public interface Messages {
     // Debug and test
     public record DebugPrintStateMsg() {}
     public record GetStateMsg() {}
-    public record NodeStateReplyMsg(java.util.TreeMap<Integer, StorageData> storage, 
-                                    java.util.Map<Integer, ActorRef> networkView) {}
+    public record NodeStateReplyMsg(TreeMap<Integer, StorageData> storage, 
+                                    Map<Integer, ActorRef> networkView) {}
 }

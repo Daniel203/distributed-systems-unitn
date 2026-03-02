@@ -11,7 +11,9 @@ import it.unitn.models.Messages.*;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.function.BinaryOperator;
@@ -41,6 +43,11 @@ public class NetworkLogic extends BaseLogic {
 
     public void onNodeListResponseMsg(NodeListResponseMsg msg) {
         ctx.network.putAll(msg.network());
+
+        // Re-assert my alive self reference just in case the bootstrap peer gave me my
+        // old dead reference
+        ctx.network.put(ctx.id, self);
+        
         ActorRef nextNodeValue = ctx.network.getNext(ctx.id);
         sendWithDelay(nextNodeValue, new StorageRequestMsg(), self);
     }
@@ -53,9 +60,12 @@ public class NetworkLogic extends BaseLogic {
     public void onStorageResponseMsg(StorageResponseMsg msg) {
         ctx.pendingJoinReads = 0;
 
-        for (Map.Entry<Integer, StorageData> entry : msg.storage().entrySet()) {
-            int dataKey = entry.getKey();
+        // Combine keys from the neighbor's storage and our own persistent disk
+        Set<Integer> keysToCheck = new HashSet<>();
+        keysToCheck.addAll(msg.storage().keySet());
+        keysToCheck.addAll(ctx.storage.keySet());
 
+        for (int dataKey : keysToCheck) {
             if (ctx.network.isResponsible(ctx.id, dataKey, Constraints.N)) {
                 ctx.pendingJoinReads++;
                 UUID requestId = UUID.randomUUID();
@@ -67,6 +77,9 @@ public class NetworkLogic extends BaseLogic {
                     var request = new ReplicaReadRequestMsg(requestId, dataKey, false);
                     sendWithDelay(ctx.network.get(readNodeId), request, self);
                 }
+            } else {
+                // If we have data on our disk but are no longer responsible for it, delete it!
+                ctx.storage.remove(dataKey);
             }
         }
 

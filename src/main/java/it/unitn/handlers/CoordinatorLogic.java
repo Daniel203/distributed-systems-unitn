@@ -11,6 +11,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BinaryOperator;
+
 import scala.concurrent.duration.Duration;
 
 public class CoordinatorLogic extends BaseLogic {
@@ -63,7 +65,8 @@ public class CoordinatorLogic extends BaseLogic {
         }
 
         ReadRequestContext context = ctx.pendingReads.get(msg.requestId());
-        if (context == null) return;
+        if (context == null)
+            return;
 
         context.replies.add(msg.data());
 
@@ -75,8 +78,10 @@ public class CoordinatorLogic extends BaseLogic {
 
             if (context.client.equals(self)) { // Background join read
                 if (latestData != null) {
-                    ctx.storage.put(context.key, new StorageData(latestData.value(), latestData.version()));
+                    ctx.storage.merge(context.key, latestData,
+                            BinaryOperator.maxBy(Comparator.comparingInt(StorageData::version)));
                 }
+
                 ctx.pendingJoinReads--;
 
                 if (ctx.pendingJoinReads == 0) {
@@ -92,10 +97,12 @@ public class CoordinatorLogic extends BaseLogic {
 
     private void handleClientWritePhaseOne(ReplicaReadResponseMsg msg) {
         WriteRequestContext context = ctx.pendingWrites.get(msg.requestId());
-        if (context == null) return;
+        if (context == null)
+            return;
 
         if (msg.lockDenied()) {
-            if (context.phase2Started) return;
+            if (context.phase2Started)
+                return;
 
             ctx.pendingWrites.remove(msg.requestId());
             sendWithDelay(context.client, new ClientUpdateResponseMsg(false), self);
@@ -129,9 +136,11 @@ public class CoordinatorLogic extends BaseLogic {
 
     public void onReplicaWriteResponseMsg(ReplicaWriteResponseMsg msg) {
         WriteRequestContext context = ctx.pendingWrites.get(msg.requestId());
-        if (context == null) return;
+        if (context == null)
+            return;
 
-        if (msg.success()) context.writeAcks++;
+        if (msg.success())
+            context.writeAcks++;
 
         if (context.writeAcks == Constraints.W) {
             sendWithDelay(context.client, new ClientUpdateResponseMsg(true), self);
@@ -161,7 +170,6 @@ public class CoordinatorLogic extends BaseLogic {
                 self,
                 new CheckTimeoutMsg(requestId),
                 actorContext.system().dispatcher(),
-                ActorRef.noSender()
-        );
+                ActorRef.noSender());
     }
 }
