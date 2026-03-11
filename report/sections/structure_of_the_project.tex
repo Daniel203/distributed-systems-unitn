@@ -21,7 +21,14 @@ distinct types of entities:
         are Akka actors organized in a logical circular ring. They
         route messages, manage the distributed storage, and
         coordinate with one another to ensure data replication and
-        fault tolerance.
+        fault tolerance. Each node plays three roles simultaneously:
+        a \emph{coordinator} that handles client requests, a
+        \emph{replica} that stores data and responds to quorum
+        messages, and a \emph{network participant} that manages
+        ring topology changes. These roles are implemented as
+        separate logic classes (\texttt{CoordinatorLogic},
+        \texttt{ReplicaLogic}, \texttt{NetworkLogic}) that share a
+        single \texttt{NodeContext} state object.
 \end{itemize}
 
 \vspace{0.5cm}
@@ -39,7 +46,7 @@ distinct types of entities:
         ]
 
         % The Ring of Nodes
-        \def\radius{3cm}
+        \def\radius{2.8cm} 
         \node[actor] (N10) at (90:\radius) {Node 10};
         \node[actor] (N20) at (18:\radius) {Node 20};
         \node[actor] (N30) at (306:\radius) {Node 30};
@@ -54,23 +61,23 @@ distinct types of entities:
         \draw[arrow] (N50) to[bend left=20] (N10);
 
         % Manager Entity
-        \node[manager] (Manager) at (0, 6) {Manager\\(System Admin)};
+        \node[manager] (Manager) at (0, 4.8) {Manager\\(System Admin)}; 
 
-        % Client Entities (Moved further left to stretch the arrows)
-        \node[client] (C1) at (-6.5, 2.5) {Client 1};
-        \node[client] (C2) at (-6.5, -2) {Client 2};
+        % Client Entities
+        \node[client] (C1) at (-6, 2) {Client 1}; 
+        \node[client] (C2) at (-6, -1.5) {Client 2}; 
 
         % Manager to Node interactions (dashed red arrows)
-        \draw[dashed_arrow] (Manager) -- node[right=40, align=left, xshift=0.1cm] {join, leave,\\crash, recover} (N10);
+        \draw[dashed_arrow] (Manager) -- node[right, align=left, xshift=1.5cm, pos=1.0] {join, leave,\\crash, recover} (N10);
         \draw[dashed_arrow] (Manager) to[bend left=15] (N20);
 
         % Manager to Client interactions
-        \draw[dashed_arrow] (Manager) to[bend right=25] node[left, xshift=-0.1cm] {spawn} (C1);
+        \draw[dashed_arrow] (Manager) to[bend right=25] node[left, xshift=-0.2cm] {spawn} (C1);
 
         % Client interactions (solid black arrows)
-        % Added 'above=0.1cm' and 'below=0.1cm' to lift the text off the line
         \draw[arrow] (C1) -- node[above=0.1cm, sloped] {get/update} (N50);
         \draw[arrow] (C2) -- node[below=0.1cm, sloped] {get/update} (N40);
 
     \end{tikzpicture}
+    \caption{High-level architecture of the Mars Storage System.}
 \end{figure}

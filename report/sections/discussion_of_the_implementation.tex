@@ -1,101 +1,110 @@
 \section{Discussion of the Implementation}
 
 \subsection{Sequential Consistency}
-The system provides Sequential Consistency. This means that all clients will
-always see the operations in the exact same order, and no one will ever read
-"backwards" in time. 
+The system provides Sequential Consistency: all clients observe operations in
+the same global order, and no client ever reads a value older than one it has
+already seen.
 
-The system achieves this by combining a \textbf{Write Locking
-mechanism} (inspired by two-phase locking protocols) with \textbf{Quorum
-Intersection ($W + R > N$)} and \textbf{Data Versioning}:
+The guarantee rests on three cooperating mechanisms.
 
-\begin{itemize}
-    \item \textbf{Preventing Write Conflicts:} If two clients try to update the
-        same key at the exact same time, their Coordinators both send messages
-        to the replicas asking for an exclusive lock. Because a write requires
-        locking a Quorum (majority) of the nodes, only one Coordinator can win.
-        The slower Coordinator receives a "lock denied" message and fails. The
-        winner writes the new data with a higher version number. 
-    \item \textbf{Preventing Stale Reads:} Because our Write Quorum ($W=2$)
-        plus our Read Quorum ($R=2$) is strictly greater than the total number
-        of replicas ($N=3$), any read operation must mathematically overlap
-        with at least one node that holds the newest successful write. The
-        Coordinator simply looks at the version numbers and returns the highest
-        one to the client. This makes it impossible for the system to return
-        old data after a write has finished.
-\end{itemize}
+\textbf{Write serialisation via 2PL locking.}
+Before committing a new value, a write coordinator first acquires an exclusive
+lock on the key at each of the $N$ responsible replicas by sending a
+\texttt{ReplicaReadRequestMsg} with the \texttt{intentToWrite} flag set. A
+replica that already holds a lock for a different request immediately replies
+with \texttt{lockDenied}. If any replica denies the lock before the coordinator
+collects $W$ grants, the write is aborted and the client is notified. This
+ensures that two writes to the same key can never interleave: one will always
+be fully serialised before the other starts committing.
+
+\textbf{Quorum intersection ($W + R > N$).}
+With the parameters $N=3$, $W=2$, $R=2$, every read quorum and every write
+quorum must share at least one replica ($W + R = 4 > N = 3$). Consequently,
+any read issued after a write has completed is guaranteed to contact at least
+one replica that already holds the new version. The coordinator returns the
+value with the highest version number among the $R$ replies, so stale data
+from replicas that have not yet received the update is automatically discarded.
+
+\textbf{Read blocking during active writes.}
+The same lock that prevents write/write conflicts also blocks concurrent reads.
+When a replica holds a lock with \texttt{intentToWrite = true}, it replies with
+\texttt{lockDenied} to any other read or write request for that key, regardless
+of the requester's UUID. A read coordinator that receives a \texttt{lockDenied}
+immediately aborts and notifies the client. This prevents a client from
+observing a partially written value and then failing to observe it again on a
+subsequent read, which would violate sequential consistency.
+
+Together, these three mechanisms ensure that the result of any execution is
+equivalent to some valid serial order of all operations, and that the
+operations issued by each individual client appear in their program order
+within that global sequence.
 
 \subsection{Message Efficiency and Data Routing}
-The system is designed to use the minimum amount of network messages. We avoid
-broadcast messages and keep the back-and-forth communication between nodes as
-short as possible.
+The system is designed to use the minimum number of network messages.
 
-\begin{itemize}
-    \item \textbf{Read and Write Efficiency:} When a client wants to read or
-        write, the Coordinator calculates the $N$ responsible nodes and sends
-        messages only to them, avoiding network broadcasts. We also minimize
-        the round trips. For a read, the Coordinator asks the $N$ nodes and
-        they reply with the data—just one round trip, job done. For a write, we
-        use exactly two steps (one to lock and read the version, one to save
-        the data) to ensure consistency without adding unnecessary confirmation
-        messages.
-    \item \textbf{Join and Leave Efficiency:} For network changes, we ensure
-        data is only sent to the nodes responsible for it. When a node joins,
-        it does not ask the whole network for data; it contacts only its
-        clockwise neighbor and takes only the keys it needs. When a node
-        leaves, it calculates the new network layout to see who will take over
-        its keys. It then splits its data and sends it directly to those
-        specific nodes, ensuring no data is sent to the wrong places.
-\end{itemize}
+\textbf{Read and write efficiency.}
+The coordinator calculates the $N$ responsible nodes locally (every node holds
+a complete view of the ring) and contacts only those nodes, avoiding any
+broadcast. A read completes in one round trip: the coordinator sends $N$
+requests and returns to the client as soon as $R$ replies arrive. A write uses
+two round trips: one to lock and read the current version, one to commit the
+new value. 
+
+\textbf{Join and leave efficiency.}
+When a node joins, it contacts only its clockwise neighbour to obtain an
+initial dataset, then performs background quorum reads only for the keys it is
+responsible for---not for all keys in the system. When a node leaves, it
+computes the difference between the current and future responsible sets for
+each of its keys and sends data \emph{only} to nodes that do not already hold a
+replica. Nodes that were already replicas before the departure receive only a
+topology notification with an empty data payload.
 
 \subsection{The Write and Lock Workflow}
-Because multiple clients can try to update the same data at the same time, we
-implemented a strict, two-step locking mechanism. This is the core algorithm
-that guarantees our system's consistency. When a Coordinator receives a write
-request, it executes the following steps:
+The two-phase write protocol is the core algorithm guaranteeing consistency.
 
 \begin{itemize}
-    \item \textbf{Step 1: Acquire Locks and Read Version.} 
-    The Coordinator sends a \texttt{ReplicaReadRequestMsg} to the $N$
-    responsible nodes with a special flag: \texttt{intentToWrite = true}. When
-    a replica receives this, it does two things: it locks the specific key so
-    no other reads or writes can touch it, and it returns its current data
-    version to the Coordinator. 
-    
-    \item \textbf{Handling Conflicts:} 
-    If a second Coordinator tries to write to the same key, the replica sees
-    that the key is already locked. It immediately replies with a
-    \texttt{lockDenied} message. The second Coordinator fails to reach its
-    Quorum and aborts the write. This prevents "dirty writes" and forces
-    overlapping operations to happen one after the other.
+    \item \textbf{Phase 1 --- Acquire locks and read version.}
+    The coordinator sends \texttt{ReplicaReadRequestMsg} (with
+    \texttt{intentToWrite = true}) to all $N$ responsible replicas. Each
+    replica that is not already locked sets a lock entry keyed by the
+    request's UUID, starts an internal safety timer (set to $T + 500$\,ms),
+    and returns its stored value and version. If a replica is already locked,
+    it immediately replies \texttt{lockDenied}.
 
-    \item \textbf{Step 2: Commit and Unlock.} 
-    Once the first Coordinator receives successful locks from a Quorum of nodes
-    ($W=2$), it finds the highest version number among them, adds 1 to it, and
-    sends the \texttt{ReplicaWriteRequestMsg} with the new data. The replicas
-    overwrite their old data, save the new version, and finally release the
-    lock.
+    \item \textbf{Conflict handling.}
+    If any \texttt{lockDenied} arrives before the coordinator has collected
+    $W$ successful lock grants, the write is aborted: the coordinator removes
+    the pending context, notifies the client of failure, and broadcasts
+    \texttt{UnlockKeyMsg} to all $N$ replicas to release any partial locks
+    already granted.
 
-    \item \textbf{Preventing Deadlocks:} 
-    A major risk with locks is that a node might stay locked forever if the
-    Coordinator crashes in the middle of Step 1. To prevent this, replicas
-    start their own internal timeout when they grant a lock. If they do not
-    receive the Step 2 commit message within the timeout period, they
-    automatically unlock the key, ensuring the system never freezes.
+    \item \textbf{Phase 2 --- Commit and unlock.}
+    Once $W$ lock grants have been collected, the coordinator determines the
+    maximum version among the replies, increments it by one, and sends
+    \texttt{ReplicaWriteRequestMsg} with the new \texttt{StorageData} to all
+    $N$ replicas. Each replica writes the value (keeping whichever version is
+    higher, via \texttt{merge}), releases its lock, and replies with an ack.
+    The coordinator notifies the client of success after receiving $W$ acks.
+
+    \item \textbf{Timeout and deadlock prevention.}
+    If the coordinator does not receive $W$ responses before the timeout $T$
+    expires, it removes the pending context, informs the client, and sends
+    \texttt{UnlockKeyMsg} to all $N$ replicas to release locks immediately
+    rather than waiting for the replicas' own internal timers. The per-replica
+    safety timer ($T + 500$\,ms) serves as a final safeguard in case the
+    coordinator itself crashes mid-write.
 \end{itemize}
 
 \subsection{Additional Assumptions}
-To build this system, we made a few specific assumptions about how the hardware
-and the network behave:
+The following assumptions were made during the design and implementation of
+the system.
 
 \begin{itemize}
-    \item \textbf{Fail-Stop Crashes:} We assume that when a node fails, it
-        simply crashes and stops working. We assume nodes will never act
-        maliciously or send corrupted data to the other nodes.
-    \item \textbf{Persistent Storage:} We assume that a software crash or power
-        loss does not destroy the physical hard drive. When a node recovers, we
-        assume its previously saved data is still available on the disk.
-    \item \textbf{Unique Node IDs:} We assume the Manager assigns a strictly
-        unique ID to every node. No two nodes will ever have the exact same ID
-        or occupy the exact same spot on the ring.
+    \item \textbf{Persistent storage survives crashes.} A software or hardware
+        crash does not destroy the data on the node's logical disk. The static
+        \texttt{persistentDisks} map models this assumption.
+
+    \item \textbf{Unique node IDs.} The Manager assigns a strictly unique
+        integer ID to every node. No two nodes share the same position on
+        the ring.
 \end{itemize}

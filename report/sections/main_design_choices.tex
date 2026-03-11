@@ -1,38 +1,38 @@
 \section{Main Design Choices}
 
-
 \subsection{Tracking Ongoing Operations}
 To handle the asynchronous nature of a distributed system, the
 architecture avoids blocking threads while waiting for network responses.
 Instead, ongoing operations are tracked using stateful context objects stored
-in the node's local memory. 
+in the node's local memory.
 
 This stateful tracking mechanism is utilized for both external Client
 Read/Write requests and internal Join/Recovery synchronizations.
 
-When a node coordinates a transaction—either on behalf of an external client or
-on behalf of itself during a reboot—it generates a unique transaction
-identifier and creates a temporary tracking object. This object holds essential
-information: a reference to the requester, the target data key, and a dynamic
-collection of the responses arriving from the replicas. 
+When a node coordinates a transaction---either on behalf of an external client
+or on behalf of itself during a reboot---it generates a unique transaction
+identifier (\texttt{UUID}) and creates a temporary tracking object. This object
+holds essential information: a reference to the requester, the target data key,
+and a dynamic collection of the responses arriving from the replicas.
 
-These tracking objects are stored in in-memory data structures. For
-external client operations, the Coordinator simultaneously initiates an
-asynchronous timer based on a predefined timeout threshold. 
+These tracking objects are stored in in-memory \texttt{HashMap}s. For
+external client operations, the coordinator simultaneously initiates an
+asynchronous timer based on a predefined timeout threshold $T$.
 
 As acknowledgment messages arrive from the network, the node uses the
 transaction identifier to retrieve the corresponding tracking object, updates
 its internal counters, and evaluates whether the required Read or Write Quorum
-has been satisfied. 
+has been satisfied.
 
 Once the quorum is reached, the transaction is finalized: if it was a client
 request, the appropriate response is sent back to the user; if it was an
-internal background read for a joining node, the node safely commits the
-verified data to its own disk. The tracking object is then safely deleted from
-memory. Furthermore, if a client operation's asynchronous timer expires before
-the quorum is achieved, the operation is automatically aborted, the tracking
-object is cleaned up, and the client is notified of the timeout, ensuring that
-the system never hangs indefinitely.
+internal background read for a joining or recovering node, the node safely
+commits the verified data to its own disk. The tracking object is then deleted
+from memory. If the asynchronous timer expires before the quorum is achieved,
+the operation is automatically aborted, the tracking object is cleaned up,
+any locks held on replicas are explicitly released via \texttt{UnlockKeyMsg},
+and the client is notified of the timeout, ensuring the system never hangs
+indefinitely.
 
 \subsection{Main Messages Used in the System}
 To keep the code simple and safe, all messages in the system are implemented as
@@ -46,72 +46,89 @@ their purpose:
         \item \texttt{ClientGetRequestMsg} / \texttt{ClientUpdateRequestMsg}:
             Sent by the client to ask the system to read or write data.
         \item \texttt{ClientGetResponseMsg} / \texttt{ClientUpdateResponseMsg}:
-            Sent back to the client by the Coordinator to deliver the final
+            Sent back to the client by the coordinator to deliver the final
             result (success, failure, or data).
     \end{itemize}
-    
-    \item \textbf{Internal Storage Messages:} Used between the Coordinator and
-        the Replicas to manage Quorums and locks.
+
+    \item \textbf{Internal Storage Messages:} Used between the coordinator and
+        the replicas to manage quorums and locks.
     \begin{itemize}
         \item \texttt{ReplicaReadRequestMsg} / \texttt{ReplicaWriteRequestMsg}:
-            The Coordinator sends these to ask replicas for data or to save new
-            data.
+            The coordinator sends these to ask replicas for data or to save new
+            data. \texttt{ReplicaReadRequestMsg} carries an
+            \texttt{intentToWrite} flag: when \texttt{true}, the replica
+            acquires an exclusive lock on the key before replying.
         \item \texttt{ReplicaReadResponseMsg} /
             \texttt{ReplicaWriteResponseMsg}: The replicas reply with the
-            requested data or confirm the save. The read response also tells
-            the Coordinator if the key was already locked by someone else.
-        \item \texttt{UnlockKeyMsg}: Used to free a locked key after a write
-            finishes or a timeout happens.
+            requested data or confirm the save. The read response also carries
+            a \texttt{lockDenied} flag to signal that the key is currently
+            held by another write operation.
+        \item \texttt{UnlockKeyMsg}: Used to free a locked key. Sent by the
+            coordinator both on write completion and on timeout, and also fired
+            by an internal per-replica timer to prevent indefinite locking if
+            the coordinator fails mid-write.
     \end{itemize}
-    
+
     \item \textbf{Ring Management Messages:} Used to update the network shape
         and move data without losing it.
     \begin{itemize}
-        \item \textbf{Topology Updates:} Messages like \texttt{JoinMsg},
-            \texttt{LeaveMsg}, and \texttt{JoinedNetworkMsg} are used to add or
-            remove nodes and share the new map of the network.
-        \item \textbf{Data Transfers:} Messages like \texttt{StorageRequestMsg}
-            and \texttt{NodeLeavingMsg} are used to safely pass data from one
-            node to another when the ring changes.
+        \item \textbf{Topology Updates:} \texttt{JoinMsg},
+            \texttt{NodeListRequestMsg} / \texttt{NodeListResponseMsg}, and \\
+            \texttt{JoinedNetworkMsg} coordinate the addition of a new node
+            and the distribution of the updated network view. \texttt{LeaveMsg}
+            and \texttt{NodeLeavingMsg} handle graceful removal.
+        \item \textbf{Data Transfers:} \texttt{StorageRequestMsg} /
+            \texttt{StorageResponseMsg} allow a joining or recovering node to
+            fetch its initial dataset from its clockwise neighbour.
+            \texttt{NodeLeavingMsg} carries the orphaned data that the leaving
+            node hands off to newly responsible peers.
     \end{itemize}
 \end{itemize}
 
 \subsection{Simulating Crash and Recovery}
 In a real distributed system, if a server loses power, its active memory (RAM)
 is cleared, but the data on its physical hard drive is kept safe. To simulate
-this correctly in our Akka framework, we must separate temporary memory from
-permanent storage.
+this correctly in the Akka framework, we separate temporary memory from
+persistent storage.
 
-\textbf{1. Simulating a Crash}
+\textbf{1.~Simulating a Crash.}
 When the Manager wants to simulate a hardware failure, it sends a
-\texttt{CrashMsg} to a specific node. The node immediately executes the
-\texttt{actorContext.stop(self)} command. This completely destroys the Akka
-Actor. All of its temporary memory—like pending queues, locks, and network
-connections—is instantly erased, perfectly simulating a sudden power loss.
+\texttt{CrashMsg} to a specific node. The node immediately executes
+\texttt{actorContext.stop(self)}, completely destroying the Akka actor. All
+temporary state---pending quorum counters, locks, and in-flight
+messages---is instantly erased, correctly simulating a sudden power loss.
 
-\textbf{2. Simulating a Physical Hard Drive}
-To ensure that the saved data survives the crash, we use a \texttt{static
+\textbf{2.~Simulating a Physical Hard Drive.}
+To ensure that saved data survives the crash, we use a \texttt{static
 ConcurrentHashMap} named \texttt{persistentDisks}. Because this map is
-\texttt{static}, it exists outside the lifecycle of any single Actor. It acts
-like a warehouse of physical hard drives, where each box is labeled with a Node
-ID. When an Actor dies, its "hard drive" stays safely in the warehouse.
+\texttt{static}, it exists outside the lifecycle of any single actor. It acts
+like a warehouse of physical hard drives keyed by node ID. When an actor is
+destroyed, its entry in this map remains intact.
 
-\textbf{3. The Recovery Process}
-When the Manager decides to reboot the crashed node, it spawns a new Akka
-Actor with the same ID and sends it a \texttt{RecoverMsg}. The recovery happens
-in three steps:
+\textbf{3.~The Recovery Process.}
+When the Manager reboots a crashed node, it spawns a new Akka actor with the
+same ID and sends it a \texttt{RecoverMsg}. Recovery proceeds in three steps:
 \begin{itemize}
-    \item \textbf{Mounting the Disk:} The new Actor checks the
-        \texttt{persistentDisks} map, finds the hard drive matching its ID, and
-        loads its previous data.
+    \item \textbf{Mounting the Disk:} The new actor retrieves its entry from
+        \texttt{persistentDisks} and immediately has access to all data it
+        held before the crash.
     \item \textbf{Updating the Topology:} The node contacts a bootstrap peer
-        (another active node) to get the latest map of the network ring.
-    \item \textbf{Synchronizing Missed Data:} The recovering node asks its
-        clockwise neighbor for data. It then combines the neighbor's keys with
-        the keys on its own hard drive. For every key it is responsible for, it
-        launches a background Quorum Read. This ensures that if any data was
-        updated by the network while the node was dead, the node safely
-        downloads the newest version before it officially resumes normal
-        operations.
+        to obtain the current network membership list.
+    \item \textbf{Synchronizing Missed Data:} The recovering node compares the
+        keys from its clockwise neighbour's storage against its own disk.
+        For every key it is now responsible for, it launches a background
+        quorum read. Items no longer under its responsibility (because new
+        nodes joined while it was down) are discarded. This guarantees the
+        node holds exactly the right data---and the most recent version of
+        it---before it resumes serving client requests.
 \end{itemize}
 
+\subsection{Network Propagation Delay Simulation}
+To emulate realistic network conditions, every unicast message in the system is
+sent through a \texttt{sendWithDelay} helper defined in \texttt{BaseLogic}.
+Before each transmission, the node draws a random delay uniformly distributed
+between 10\,ms and 50\,ms and schedules the delivery via the Akka scheduler.
+This applies to all message types: client responses, quorum requests,
+topology updates, and data transfers. The simulation therefore exercises
+timeout and quorum logic under realistic asynchronous conditions rather than
+in a synchronous, zero-latency environment.
