@@ -2,8 +2,11 @@ package it.unitn.models;
 
 import akka.actor.ActorRef;
 import it.unitn.dataStructures.CircularTreeMap;
+import it.unitn.models.Messages.ClientUpdateRequestMsg;
 
+import java.util.ArrayDeque;
 import java.util.HashMap;
+import java.util.Map;
 import java.util.Random;
 import java.util.TreeMap;
 import java.util.UUID;
@@ -16,6 +19,7 @@ public class NodeContext {
     public final TreeMap<Integer, StorageData> storage;
     public final HashMap<UUID, ReadRequestContext> pendingReads;
     public final HashMap<UUID, WriteRequestContext> pendingWrites;
+    public final HashMap<Integer, ArrayDeque<Map.Entry<ClientUpdateRequestMsg, ActorRef>>> waitingWrites = new HashMap<>();
     public final HashMap<Integer, UUID> lockedKeys;
     public int pendingJoinReads;
     public boolean isRecovering;

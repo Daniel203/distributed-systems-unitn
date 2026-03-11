@@ -44,13 +44,16 @@ public class ReplicaLogic extends BaseLogic {
 
     public void onReplicaWriteRequestMsg(ReplicaWriteRequestMsg msg, ActorRef sender) {
         UUID lockOwner = ctx.lockedKeys.get(msg.key());
+        boolean wrote = false; 
+
         if (lockOwner == null || lockOwner.equals(msg.requestId())) {
             ctx.lockedKeys.remove(msg.key());
             ctx.storage.merge(msg.key(), msg.data(),
                     BinaryOperator.maxBy(Comparator.comparingInt(StorageData::version)));
+            wrote = true;
         }
 
-        ReplicaWriteResponseMsg res = new ReplicaWriteResponseMsg(msg.requestId(), msg.key(), true);
+        ReplicaWriteResponseMsg res = new ReplicaWriteResponseMsg(msg.requestId(), msg.key(), wrote);
         sendWithDelay(sender, res, self);
     }
 

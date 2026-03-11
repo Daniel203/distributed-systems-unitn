@@ -7,8 +7,10 @@ import it.unitn.constraints.Errors;
 import it.unitn.models.*;
 import it.unitn.models.Messages.*;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BinaryOperator;
@@ -35,6 +37,20 @@ public class CoordinatorLogic extends BaseLogic {
     }
 
     public void onClientUpdateRequestMsg(ClientUpdateRequestMsg msg, ActorRef sender) {
+        // If there is already an in-flight write for this key on this coordinator,
+        // queue the new request instead of starting it immediately.
+        if (isWriteInFlightForKey(msg.key())) {
+            ctx.waitingWrites
+                    .computeIfAbsent(msg.key(), k -> new ArrayDeque<>())
+                    .add(Map.entry(msg, sender));
+            return;
+        }
+
+        startWrite(msg, sender);
+    }
+
+    private void startWrite(ClientUpdateRequestMsg msg, ActorRef sender) {
+        // Start the write
         UUID requestId = UUID.randomUUID();
         WriteRequestContext context = new WriteRequestContext(sender, msg.key(), msg.value());
         ctx.pendingWrites.put(requestId, context);
@@ -44,6 +60,19 @@ public class CoordinatorLogic extends BaseLogic {
         for (int targetNodeId : ctx.network.getNResponsibleNodes(msg.key(), Constraints.N)) {
             var request = new ReplicaReadRequestMsg(requestId, msg.key(), true);
             sendWithDelay(ctx.network.get(targetNodeId), request, self);
+        }
+    }
+
+    private boolean isWriteInFlightForKey(int key) {
+        return ctx.pendingWrites.values().stream()
+                .anyMatch(w -> w.key == key);
+    }
+
+    private void onWriteFinished(int key) {
+        ArrayDeque<Map.Entry<ClientUpdateRequestMsg, ActorRef>> queue = ctx.waitingWrites.get(key);
+        if (queue != null && !queue.isEmpty()) {
+            Map.Entry<ClientUpdateRequestMsg, ActorRef> next = queue.poll();
+            startWrite(next.getKey(), next.getValue());
         }
     }
 
@@ -113,6 +142,8 @@ public class CoordinatorLogic extends BaseLogic {
                 var unlockMsg = new UnlockKeyMsg(context.key, msg.requestId());
                 sendWithDelay(ctx.network.get(targetNodeId), unlockMsg, self);
             }
+
+            onWriteFinished(context.key);
             return;
         }
 
@@ -147,6 +178,7 @@ public class CoordinatorLogic extends BaseLogic {
         if (context.writeAcks == Constraints.W) {
             sendWithDelay(context.client, new ClientUpdateResponseMsg(true), self);
             ctx.pendingWrites.remove(msg.requestId());
+            onWriteFinished(context.key);
         }
     }
 
@@ -169,6 +201,8 @@ public class CoordinatorLogic extends BaseLogic {
                 var unlockMsg = new UnlockKeyMsg(writeCtx.key, id);
                 sendWithDelay(ctx.network.get(targetNodeId), unlockMsg, self);
             }
+
+            onWriteFinished(writeCtx.key);
         }
     }
 

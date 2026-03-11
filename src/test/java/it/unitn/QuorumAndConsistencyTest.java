@@ -163,4 +163,46 @@ public class QuorumAndConsistencyTest extends SystemTestBase {
         // Wait for the write to finish
         concurrentWrite.get();
     }
+
+    @Test
+    public void testThreeConcurrentWritesSameCoordinatorAllSucceed() throws Exception {
+        List<Integer> nodeIds = joinNodes(Constraints.N + 1);
+        int targetKey = 55;
+
+        // Fire all three without any sleep between them
+        CompletableFuture<Object> write1 = Patterns.ask(
+                manager.getNodeById(nodeIds.get(0)),
+                new ClientUpdateRequestMsg(targetKey, "first"),
+                Duration.ofMillis(Constraints.TIMEOUT * 4)).toCompletableFuture();
+
+        CompletableFuture<Object> write2 = Patterns.ask(
+                manager.getNodeById(nodeIds.get(0)),
+                new ClientUpdateRequestMsg(targetKey, "second"),
+                Duration.ofMillis(Constraints.TIMEOUT * 4)).toCompletableFuture();
+
+        CompletableFuture<Object> write3 = Patterns.ask(
+                manager.getNodeById(nodeIds.get(0)),
+                new ClientUpdateRequestMsg(targetKey, "third"),
+                Duration.ofMillis(Constraints.TIMEOUT * 4)).toCompletableFuture();
+
+        ClientUpdateResponseMsg res1 = (ClientUpdateResponseMsg) write1.get();
+        ClientUpdateResponseMsg res2 = (ClientUpdateResponseMsg) write2.get();
+        ClientUpdateResponseMsg res3 = (ClientUpdateResponseMsg) write3.get();
+
+        Thread.sleep(1000);
+
+        // All three must succeed
+        assertTrue(res1.success(), "Write 1 failed");
+        assertTrue(res2.success(), "Write 2 failed");
+        assertTrue(res3.success(), "Write 3 failed");
+
+        // Final version must be exactly 3
+        NodeStateReplyMsg finalState = getNodeState(nodeIds.get(0));
+        assertEquals(3, finalState.storage().get(targetKey).version(),
+                "Expected version 3 after three sequential writes through the same coordinator");
+
+        // Final value must be "third"
+        assertEquals("third", finalState.storage().get(targetKey).value(),
+                "Expected 'third' as the final value");
+    }
 }
