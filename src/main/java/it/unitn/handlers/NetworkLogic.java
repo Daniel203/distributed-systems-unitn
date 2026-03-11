@@ -12,6 +12,7 @@ import it.unitn.models.Messages.*;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -47,7 +48,7 @@ public class NetworkLogic extends BaseLogic {
         // Re-assert my alive self reference just in case the bootstrap peer gave me my
         // old dead reference
         ctx.network.put(ctx.id, self);
-        
+
         ActorRef nextNodeValue = ctx.network.getNext(ctx.id);
         sendWithDelay(nextNodeValue, new StorageRequestMsg(), self);
     }
@@ -73,9 +74,12 @@ public class NetworkLogic extends BaseLogic {
                 ReadRequestContext context = new ReadRequestContext(self, dataKey, new ArrayList<>());
                 ctx.pendingReads.put(requestId, context);
 
-                for (int readNodeId : ctx.network.getNResponsibleNodes(dataKey, Constraints.N)) {
-                    var request = new ReplicaReadRequestMsg(requestId, dataKey, false);
-                    sendWithDelay(ctx.network.get(readNodeId), request, self);
+                List<Integer> responsibleNodes = ctx.network.getNResponsibleNodes(dataKey, Constraints.N);
+                for (int readNodeId : responsibleNodes) {
+                    if (readNodeId != ctx.id) {
+                        var request = new ReplicaReadRequestMsg(requestId, dataKey, false);
+                        sendWithDelay(ctx.network.get(readNodeId), request, self);
+                    }
                 }
             } else {
                 // If we have data on our disk but are no longer responsible for it, delete it!
@@ -84,21 +88,7 @@ public class NetworkLogic extends BaseLogic {
         }
 
         if (ctx.pendingJoinReads == 0) {
-            finishJoinPhase();
-        }
-    }
-
-    private void finishJoinPhase() {
-        if (!ctx.isRecovering) {
-            for (Map.Entry<Integer, ActorRef> entry : ctx.network.entrySet()) {
-                if (entry.getKey() != ctx.id) {
-                    JoinedNetworkMsg joinedNetworkMsg = new JoinedNetworkMsg(ctx.id);
-                    sendWithDelay(entry.getValue(), joinedNetworkMsg, self);
-                }
-            }
-        } else {
-            System.out.println("[NODE " + ctx.id + "] Recovery complete. Quietly resuming operations.");
-            ctx.isRecovering = false;
+            self.tell(new FinishJoinPhaseMsg(), self);
         }
     }
 
@@ -122,18 +112,29 @@ public class NetworkLogic extends BaseLogic {
         for (Map.Entry<Integer, StorageData> entry : ctx.storage.entrySet()) {
             int dataKey = entry.getKey();
 
-            for (int currentNodeId : nextRing.getNResponsibleNodes(dataKey, Constraints.N)) {
-                handoffPackages.putIfAbsent(currentNodeId, new TreeMap<>());
-                handoffPackages.get(currentNodeId).put(dataKey, entry.getValue());
+            // Nodes responsible in the new ring (after I leave)
+            List<Integer> newlyResponsible = nextRing.getNResponsibleNodes(dataKey, Constraints.N);
+            // Nodes responsible in the current ring (before I leave), excluding me
+            List<Integer> currentlyResponsible = ctx.network.getNResponsibleNodes(dataKey, Constraints.N);
+            currentlyResponsible.remove((Integer) ctx.id);
+
+            for (int newNodeId : newlyResponsible) {
+                if (!currentlyResponsible.contains(newNodeId)) {
+                    // This node does not yet have the data — send it
+                    handoffPackages.putIfAbsent(newNodeId, new TreeMap<>());
+                    handoffPackages.get(newNodeId).put(dataKey, entry.getValue());
+                }
             }
         }
 
+        // Send data handoff packages to nodes that need new data
         for (Map.Entry<Integer, TreeMap<Integer, StorageData>> entry : handoffPackages.entrySet()) {
             ActorRef targetNode = ctx.network.get(entry.getKey());
             NodeLeavingMsg nodeLeavingMsg = new NodeLeavingMsg(ctx.id, entry.getValue());
             sendWithDelay(targetNode, nodeLeavingMsg, self);
         }
 
+        // Notify all remaining nodes of the departure (with empty data if no handoff needed)
         for (Map.Entry<Integer, ActorRef> entry : nextRing.entrySet()) {
             if (!handoffPackages.containsKey(entry.getKey())) {
                 NodeLeavingMsg nodeLeavingMsg = new NodeLeavingMsg(ctx.id, new TreeMap<>());
@@ -166,7 +167,7 @@ public class NetworkLogic extends BaseLogic {
         ctx.network.put(ctx.id, self);
 
         if (msg.bootstrapPeer() == null) {
-            ctx.isRecovering = false; 
+            ctx.isRecovering = false;
             return;
         }
 

@@ -101,6 +101,8 @@ public class CoordinatorLogic extends BaseLogic {
             return;
 
         if (msg.lockDenied()) {
+            // If phase 2 already started, a late lock-denied reply is simply
+            // ignored. The context will be cleaned up when W write acks are received.
             if (context.phase2Started)
                 return;
 
@@ -161,6 +163,12 @@ public class CoordinatorLogic extends BaseLogic {
         if (ctx.pendingWrites.containsKey(id)) {
             WriteRequestContext writeCtx = ctx.pendingWrites.remove(id);
             sendWithDelay(writeCtx.client, new ClientUpdateResponseMsg(false), self);
+
+            // Release locks on all N replicas when a write times out
+            for (int targetNodeId : ctx.network.getNResponsibleNodes(writeCtx.key, Constraints.N)) {
+                var unlockMsg = new UnlockKeyMsg(writeCtx.key, id);
+                sendWithDelay(ctx.network.get(targetNodeId), unlockMsg, self);
+            }
         }
     }
 

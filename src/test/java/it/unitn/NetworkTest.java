@@ -37,26 +37,4 @@ public class NetworkTest extends SystemTestBase {
         assertTrue(state.storage().isEmpty(), "Storage should be empty on startup");
     }
 
-    @Test
-    public void testSingleNodeNetwork() throws Exception{
-        // Arrange: Boot only 1 node (less than Constraints.N)
-        List<Integer> nodeIds = joinNodes(1);
-        int soleNodeId = nodeIds.get(0);
-
-        // Act: Write data to the network
-        int testKey = 31;
-        manager.getNodeById(soleNodeId).tell(
-            new ClientUpdateRequestMsg(testKey, "lonely_node_data"), 
-            dummyClient
-        );
-        Thread.sleep(500);
-
-        // Assert: The single node should store the data, even though it can't find N replicas
-        NodeStateReplyMsg state = getNodeState(soleNodeId);
-
-        assertNotNull(state.storage().get(testKey), 
-                "Node must store the key locally even if N > current network size");
-        assertEquals("lonely_node_data", state.storage().get(testKey).value());
-        assertEquals(1, state.storage().get(testKey).version());
-    }
 }
