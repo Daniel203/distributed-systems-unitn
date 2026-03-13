@@ -1,12 +1,16 @@
 package it.unitn.handlers;
 
-import it.unitn.models.NodeContext;
+import java.util.concurrent.TimeUnit;
 
 import akka.actor.ActorContext;
 import akka.actor.ActorRef;
+import it.unitn.models.NodeContext;
 import scala.concurrent.duration.Duration;
-import java.util.concurrent.TimeUnit;
 
+/**
+ * Shared base for CoordinatorLogic, ReplicaLogic, and NetworkLogic.
+ * Provides access to NodeContext, ActorContext, self, and sendWithDelay.
+ */
 public abstract class BaseLogic {
     protected final NodeContext ctx;
     protected final ActorContext actorContext;

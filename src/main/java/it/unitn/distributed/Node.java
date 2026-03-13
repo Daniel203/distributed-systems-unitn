@@ -5,10 +5,37 @@ import akka.actor.Props;
 import it.unitn.handlers.CoordinatorLogic;
 import it.unitn.handlers.NetworkLogic;
 import it.unitn.handlers.ReplicaLogic;
+import it.unitn.models.Messages.CheckTimeoutMsg;
+import it.unitn.models.Messages.ClientGetRequestMsg;
+import it.unitn.models.Messages.ClientUpdateRequestMsg;
+import it.unitn.models.Messages.CrashMsg;
+import it.unitn.models.Messages.DebugPrintStateMsg;
+import it.unitn.models.Messages.FinishJoinPhaseMsg;
+import it.unitn.models.Messages.GetStateMsg;
+import it.unitn.models.Messages.JoinMsg;
+import it.unitn.models.Messages.JoinedNetworkMsg;
+import it.unitn.models.Messages.LeaveMsg;
+import it.unitn.models.Messages.NodeLeavingMsg;
+import it.unitn.models.Messages.NodeListRequestMsg;
+import it.unitn.models.Messages.NodeListResponseMsg;
+import it.unitn.models.Messages.NodeStateReplyMsg;
+import it.unitn.models.Messages.RecoverMsg;
+import it.unitn.models.Messages.ReplicaReadRequestMsg;
+import it.unitn.models.Messages.ReplicaReadResponseMsg;
+import it.unitn.models.Messages.ReplicaWriteRequestMsg;
+import it.unitn.models.Messages.ReplicaWriteResponseMsg;
+import it.unitn.models.Messages.StorageRequestMsg;
+import it.unitn.models.Messages.StorageResponseMsg;
+import it.unitn.models.Messages.UnlockKeyMsg;
 import it.unitn.models.NodeContext;
-import it.unitn.models.Messages.*;
 
+/**
+ * Akka actor for a ring node. Acts as a thin dispatcher: routes each incoming
+ * message to CoordinatorLogic, ReplicaLogic, or NetworkLogic.
+ * All three modules share a single NodeContext.
+ */
 public class Node extends AbstractActor {
+
     // The Shared State
     private final NodeContext ctx;
 

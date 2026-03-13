@@ -6,6 +6,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 
+/**
+ * Sorted map with clockwise/counter-clockwise wraparound navigation.
+ * Models the logical ring: "next" = higher key, wrapping at the maximum.
+ *
+ * Core method: getNResponsibleNodes finds the N nodes responsible for a data
+ * key by starting at the first node >= key (ceiling) and walking clockwise.
+ */
 public class CircularTreeMap<K, V> {
     private TreeMap<K, V> map;
 
@@ -44,7 +51,6 @@ public class CircularTreeMap<K, V> {
     public boolean isEmpty() {
         return this.map.isEmpty();
     }
-
 
     public V getNext(K key) {
         K nextKey = this.map.higherKey(key);
@@ -127,13 +133,13 @@ public class CircularTreeMap<K, V> {
         return Map.copyOf(map);
     }
 
-
     /**
-     * Finds the exact N nodes responsible for a given dataKey.
+     * Returns the N node IDs responsible for dataKey (ceiling + clockwise walk).
      */
     public List<K> getNResponsibleNodes(K dataKey, int n) {
         List<K> responsibleNodes = new ArrayList<>();
-        if (this.map.isEmpty()) return responsibleNodes;
+        if (this.map.isEmpty())
+            return responsibleNodes;
 
         // find the first node >= dataKey, then walks clockwise
         K currentNode = this.map.ceilingKey(dataKey);
@@ -151,17 +157,12 @@ public class CircularTreeMap<K, V> {
         return responsibleNodes;
     }
 
-    /**
-     * Checks if a specific nodeId is one of the N responsible nodes for a dataKey.
-     */
+    /** Returns true if nodeId is one of the N responsible nodes for dataKey. */
     public boolean isResponsible(K nodeId, K dataKey, int n) {
         return getNResponsibleNodes(dataKey, n).contains(nodeId);
     }
 
-    /**
-     * Creates a copy of the current ring, excluding a specific node.
-     * Perfect for calculating the network topology when a node leaves.
-     */
+    /** Returns a copy of this ring without nodeIdToRemove. Used by the leave protocol. */
     public CircularTreeMap<K, V> cloneWithout(K nodeIdToRemove) {
         CircularTreeMap<K, V> clone = new CircularTreeMap<>();
         clone.putAll(this.map);

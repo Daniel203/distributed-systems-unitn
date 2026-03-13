@@ -1,13 +1,21 @@
 package it.unitn.distributed;
 
+import java.util.TreeMap;
+
 import akka.actor.Actor;
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 import akka.actor.InvalidActorNameException;
-import it.unitn.models.Messages.*;
+import it.unitn.models.Messages.CrashMsg;
+import it.unitn.models.Messages.JoinMsg;
+import it.unitn.models.Messages.LeaveMsg;
+import it.unitn.models.Messages.RecoverMsg;
 
-import java.util.TreeMap;
-
+ 
+/**
+ * System administrator. Lives outside the ring; creates and destroys node actors.
+ * Maintains its own live-node map so management commands can be routed by ID.
+ */
 public class Manager {
     private final TreeMap<Integer, ActorRef> network = new TreeMap<>();
     private final ActorSystem system;
@@ -17,6 +25,7 @@ public class Manager {
     }
 
     public void join(int nodeId) {
+        /** Spawns a new node and tells it to join the ring via a bootstrap peer. */
         try {
             ActorRef node = system.actorOf(Node.props(nodeId), String.valueOf(nodeId));
 
@@ -40,6 +49,7 @@ public class Manager {
         }
     }
 
+    /** Tells the node to leave gracefully (hands off data, then stops itself). */
     public void leave(int nodeId) {
         var node = this.network.get(nodeId);
 
@@ -52,6 +62,7 @@ public class Manager {
         this.network.remove(nodeId);
     }
 
+    /** Simulates a power failure: stops the actor immediately with no data handoff. */
     public void crash(int nodeId) {
         ActorRef node = this.network.get(nodeId);
         if (node != null) {
@@ -65,6 +76,7 @@ public class Manager {
         }
     }
 
+    /** Spawns a replacement actor for a crashed node; it re-attaches to the existing disk entry. */
     public void recover(int nodeId) {
         try {
             ActorRef node = system.actorOf(Node.props(nodeId), String.valueOf(nodeId));
