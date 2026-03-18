@@ -79,20 +79,23 @@ The two-phase write protocol is the core algorithm guaranteeing consistency.
     already granted.
 
     \item \textbf{Phase 2 --- Commit and unlock.}
-    Once $W$ lock grants have been collected, the coordinator determines the
-    maximum version among the replies, increments it by one, and sends
-    \texttt{ReplicaWriteRequestMsg} with the new \texttt{StorageData} to all
-    $N$ replicas. Each replica writes the value (keeping whichever version is
-    higher, via \texttt{merge}), releases its lock, and replies with an ack.
-    The coordinator notifies the client of success after receiving $W$ acks.
+    Once $W$ lock grants have been
+    collected, the coordinator determines the maximum version among the replies,
+    increments it by one, and notifies the client of success immediately. It then
+    sends \texttt{ReplicaWriteRequestMsg} with the new \texttt{StorageData} to all
+    $N$ replicas as a fire-and-forget operation. Each replica writes the value
+    (keeping whichever version is higher, via merge) and releases its lock. The
+    coordinator removes the pending context and starts the next queued write for
+    the same key only after receiving $W$ write acks, ensuring that the locks are
+    fully released before a subsequent write begins.
 
     \item \textbf{Timeout and deadlock prevention.}
-    If the coordinator does not receive $W$ responses before the timeout $T$
-    expires, it removes the pending context, informs the client, and sends
-    \texttt{UnlockKeyMsg} to all $N$ replicas to release locks immediately
-    rather than waiting for the replicas' own internal timers. The per-replica
-    safety timer ($T + 500$\,ms) serves as a final safeguard in case the
-    coordinator itself crashes mid-write.
+    If the coordinator does not
+    receive $W$ phase-1 grants before the timeout $T$ expires, it removes the
+    pending context, informs the client of failure, and sends \texttt{UnlockKeyMsg}
+    to all $N$ replicas to release any partial locks already granted. The
+    per-replica safety timer ($T + 500$ ms) serves as a final safeguard in case
+    the coordinator itself crashes mid-write.
 \end{itemize}
 
 \subsection{Additional Assumptions}
