@@ -98,7 +98,7 @@ public class CoordinatorLogic extends BaseLogic {
         ArrayDeque<Map.Entry<ClientUpdateRequestMsg, ActorRef>> queue = ctx.waitingWrites.get(key);
         if (queue != null && !queue.isEmpty()) {
             Map.Entry<ClientUpdateRequestMsg, ActorRef> next = queue.poll();
-            startWrite(next.getKey(), next.getValue()); 
+            startWrite(next.getKey(), next.getValue());
         }
     }
 
@@ -201,11 +201,10 @@ public class CoordinatorLogic extends BaseLogic {
 
             StorageData newData = new StorageData(context.newValue, maxVersion + 1);
 
-            // Reply to client 
+            // Reply to client
             sendWithDelay(context.client, new ClientUpdateResponseMsg(true), self);
             // ctx.pendingWrites.remove(msg.requestId());
             // onWriteFinished(context.key);
-
 
             // Write to all N (not just W) to maximise availability of the new version.
             for (int targetNodeId : ctx.network.getNResponsibleNodes(context.key, Constraints.N)) {
@@ -234,10 +233,12 @@ public class CoordinatorLogic extends BaseLogic {
         }
     }
 
-
     // ---- Timeout ------------------------------------------------------------
 
-    /** Aborts the operation if it is still pending; releases write locks immediately. */
+    /**
+     * Aborts the operation if it is still pending; releases write locks
+     * immediately.
+     */
     public void onCheckTimeoutMsg(CheckTimeoutMsg msg) {
         UUID id = msg.requestId();
 
@@ -249,16 +250,17 @@ public class CoordinatorLogic extends BaseLogic {
         }
 
         if (ctx.pendingWrites.containsKey(id)) {
-            WriteRequestContext writeCtx = ctx.pendingWrites.remove(id);
-            sendWithDelay(writeCtx.client, new ClientUpdateResponseMsg(false), self);
+            WriteRequestContext writeCtx = ctx.pendingWrites.get(id);
 
-            // Release locks on all N replicas when a write times out
-            for (int targetNodeId : ctx.network.getNResponsibleNodes(writeCtx.key, Constraints.N)) {
-                var unlockMsg = new UnlockKeyMsg(writeCtx.key, id);
-                sendWithDelay(ctx.network.get(targetNodeId), unlockMsg, self);
+            if (!writeCtx.phase2Started) {
+                ctx.pendingWrites.remove(id);
+                sendWithDelay(writeCtx.client, new ClientUpdateResponseMsg(false), self);
+                for (int targetNodeId : ctx.network.getNResponsibleNodes(writeCtx.key, Constraints.N)){
+                    var unlockMsg = new UnlockKeyMsg(writeCtx.key, id);
+                    sendWithDelay(ctx.network.get(targetNodeId), unlockMsg, self);
+                }
+                onWriteFinished(writeCtx.key);
             }
-
-            onWriteFinished(writeCtx.key);
         }
     }
 
