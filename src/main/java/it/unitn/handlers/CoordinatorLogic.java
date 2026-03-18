@@ -98,10 +98,7 @@ public class CoordinatorLogic extends BaseLogic {
         ArrayDeque<Map.Entry<ClientUpdateRequestMsg, ActorRef>> queue = ctx.waitingWrites.get(key);
         if (queue != null && !queue.isEmpty()) {
             Map.Entry<ClientUpdateRequestMsg, ActorRef> next = queue.poll();
-            startWrite(next.getKey(), next.getValue()); /**
-                                                         * Routes to the read or write handler depending on which map
-                                                         * owns the requestId.
-                                                         */
+            startWrite(next.getKey(), next.getValue()); 
         }
     }
 
@@ -204,6 +201,12 @@ public class CoordinatorLogic extends BaseLogic {
 
             StorageData newData = new StorageData(context.newValue, maxVersion + 1);
 
+            // Reply to client 
+            sendWithDelay(context.client, new ClientUpdateResponseMsg(true), self);
+            // ctx.pendingWrites.remove(msg.requestId());
+            // onWriteFinished(context.key);
+
+
             // Write to all N (not just W) to maximise availability of the new version.
             for (int targetNodeId : ctx.network.getNResponsibleNodes(context.key, Constraints.N)) {
                 var writeRequest = new ReplicaWriteRequestMsg(msg.requestId(), context.key, newData);
@@ -225,7 +228,7 @@ public class CoordinatorLogic extends BaseLogic {
             context.writeAcks++;
 
         if (context.writeAcks == Constraints.W) {
-            sendWithDelay(context.client, new ClientUpdateResponseMsg(true), self);
+            // sendWithDelay(context.client, new ClientUpdateResponseMsg(true), self);
             ctx.pendingWrites.remove(msg.requestId());
             onWriteFinished(context.key);
         }
